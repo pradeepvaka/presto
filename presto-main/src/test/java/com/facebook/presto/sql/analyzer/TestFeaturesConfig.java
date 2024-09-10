@@ -256,7 +256,7 @@ public class TestFeaturesConfig
                 .setRemoveCrossJoinWithSingleConstantRow(true)
                 .setUseHistograms(false)
                 .setInlineProjectionsOnValues(false)
-                .setTempStorageConfigDirectoryPath("/etc/temp-storage/"));
+                .setTempStorageConfigDirectoryPath("etc/temp-storage/"));
     }
 
     @Test
@@ -461,7 +461,7 @@ public class TestFeaturesConfig
                 .put("optimizer.remove-cross-join-with-single-constant-row", "false")
                 .put("optimizer.use-histograms", "true")
                 .put("optimizer.inline-projections-on-values", "true")
-                .put("temp-storage-config-directory-path", "/etc/test-temp-storage/")
+                .put("temp-storage-config-directory-path", "etc/test-temp-storage/")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -664,7 +664,7 @@ public class TestFeaturesConfig
                 .setRemoveCrossJoinWithSingleConstantRow(false)
                 .setUseHistograms(true)
                 .setInlineProjectionsOnValues(true)
-                .setTempStorageConfigDirectoryPath("/etc/test-temp-storage/");
+                .setTempStorageConfigDirectoryPath("etc/test-temp-storage/");
         assertFullMapping(properties, expected);
     }
 
