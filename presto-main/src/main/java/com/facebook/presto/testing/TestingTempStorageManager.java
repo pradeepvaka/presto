@@ -14,10 +14,12 @@
 package com.facebook.presto.testing;
 
 import com.facebook.presto.spiller.LocalTempStorage;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.storage.TempStorageManager;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 
+import java.io.File;
 import java.nio.file.Paths;
 import java.util.UUID;
 
@@ -39,7 +41,7 @@ public class TestingTempStorageManager
     @VisibleForTesting
     public TestingTempStorageManager(String tempStoragePath)
     {
-        super(new TestingNodeManager());
+        super(new TestingNodeManager(), new File(new FeaturesConfig().getTempStorageConfigDirectoryPath()));
         addTempStorageFactory(new LocalTempStorage.Factory());
         loadTempStorage(
                 LocalTempStorage.NAME,

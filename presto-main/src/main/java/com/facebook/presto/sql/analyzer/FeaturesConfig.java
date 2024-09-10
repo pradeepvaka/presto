@@ -295,6 +295,7 @@ public class FeaturesConfig
     private boolean useHistograms;
 
     private boolean isInlineProjectionsOnValuesEnabled;
+    private String tempStorageConfigDirectoryPath = "etc/temp-storage/";
 
     public enum PartitioningPrecisionStrategy
     {
@@ -2967,6 +2968,19 @@ public class FeaturesConfig
     public FeaturesConfig setInlineProjectionsOnValues(boolean isInlineProjectionsOnValuesEnabled)
     {
         this.isInlineProjectionsOnValuesEnabled = isInlineProjectionsOnValuesEnabled;
+        return this;
+    }
+
+    public String getTempStorageConfigDirectoryPath()
+    {
+        return tempStorageConfigDirectoryPath;
+    }
+
+    @Config("temp-storage-config-directory-path")
+    @ConfigDescription("Path to the configuration files for temp storage")
+    public FeaturesConfig setTempStorageConfigDirectoryPath(String tempStorageConfigDirectoryPath)
+    {
+        this.tempStorageConfigDirectoryPath = tempStorageConfigDirectoryPath;
         return this;
     }
 }

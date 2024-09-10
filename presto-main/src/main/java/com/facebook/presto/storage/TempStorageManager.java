@@ -24,6 +24,7 @@ import com.facebook.presto.spi.storage.TempStorage;
 import com.facebook.presto.spi.storage.TempStorageContext;
 import com.facebook.presto.spi.storage.TempStorageFactory;
 import com.facebook.presto.spiller.LocalTempStorage;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -49,7 +50,8 @@ public class TempStorageManager
 {
     private static final Logger log = Logger.get(TempStorageManager.class);
     // TODO: Make this configurable
-    private static final File TEMP_STORAGE_CONFIGURATION_DIR = new File("etc/temp-storage/");
+    //private static final File TEMP_STORAGE_CONFIGURATION_DIR = new File();
+    private final File tempStorageConfigurationDir;
     public static final String TEMP_STORAGE_FACTORY_NAME = "temp-storage-factory.name";
 
     private final Map<String, TempStorageFactory> tempStorageFactories = new ConcurrentHashMap<>();
@@ -64,13 +66,15 @@ public class TempStorageManager
         this(new ConnectorAwareNodeManager(
                 requireNonNull(internalNodeManager, "internalNodeManager is null"),
                 requireNonNull(nodeInfo, "nodeInfo is null").getEnvironment(),
-                new ConnectorId(GlobalSystemConnector.NAME)));
+                new ConnectorId(GlobalSystemConnector.NAME)),
+                new File(new FeaturesConfig().getTempStorageConfigDirectoryPath()));
     }
 
     @VisibleForTesting
-    public TempStorageManager(NodeManager nodeManager)
+    public TempStorageManager(NodeManager nodeManager, File tempStorageConfigurationDir)
     {
         this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
+        this.tempStorageConfigurationDir = tempStorageConfigurationDir;
     }
 
     public void addTempStorageFactory(TempStorageFactory tempStorageFactory)
@@ -105,7 +109,7 @@ public class TempStorageManager
                         TEMP_STORAGE_FACTORY_NAME,
                         "local"));
 
-        for (File file : listFiles(TEMP_STORAGE_CONFIGURATION_DIR)) {
+        for (File file : listFiles(tempStorageConfigurationDir)) {
             if (file.isFile() && file.getName().endsWith(".properties")) {
                 String name = getNameWithoutExtension(file.getName());
                 Map<String, String> properties = loadProperties(file);
