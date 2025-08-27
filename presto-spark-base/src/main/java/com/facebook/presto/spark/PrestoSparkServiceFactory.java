@@ -55,7 +55,9 @@ public class PrestoSparkServiceFactory
                 configuration.getFunctionNamespaceProperties(),
                 configuration.getTempStorageProperties(),
                 getSqlParserOptions(),
-                getAdditionalModules(configuration));
+                getAdditionalModules(configuration),
+                false,
+                configuration);
 
         Injector injector = prestoSparkInjectorFactory.create(bootstrapTimer);
         PrestoSparkService prestoSparkService = injector.getInstance(PrestoSparkService.class);
