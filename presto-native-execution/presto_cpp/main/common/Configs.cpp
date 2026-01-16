@@ -13,6 +13,7 @@
  */
 
 #include "presto_cpp/main/common/Configs.h"
+#include <folly/system/HardwareConcurrency.h>
 #include "presto_cpp/main/common/ConfigReader.h"
 #include "presto_cpp/main/common/Utils.h"
 #include "velox/core/QueryConfig.h"
@@ -39,9 +40,9 @@ std::string bool2String(bool value) {
 }
 
 uint32_t hardwareConcurrency() {
-  const auto numLogicalCores = std::thread::hardware_concurrency();
-  // The spec says std::thread::hardware_concurrency() might return 0.
-  // But we depend on std::thread::hardware_concurrency() to create executors.
+  const auto numLogicalCores = folly::hardware_concurrency();
+  // The spec says folly::hardware_concurrency() might return 0.
+  // But we depend on folly::hardware_concurrency() to create executors.
   // Check to ensure numThreads is > 0.
   VELOX_CHECK_GT(numLogicalCores, 0);
   return numLogicalCores;
@@ -150,6 +151,17 @@ SystemConfig::SystemConfig() {
           NONE_PROP(kHttpServerHttpsPort),
           BOOL_PROP(kHttpServerHttpsEnabled, false),
           BOOL_PROP(kHttpServerHttp2Enabled, true),
+          NUM_PROP(kHttpServerIdleTimeoutMs, 60'000),
+          NUM_PROP(kHttpServerHttp2InitialReceiveWindow, 1 << 20),
+          NUM_PROP(kHttpServerHttp2ReceiveStreamWindowSize, 1 << 20),
+          NUM_PROP(kHttpServerHttp2ReceiveSessionWindowSize, 10 * (1 << 20)),
+          NUM_PROP(kHttpServerHttp2MaxConcurrentStreams, 100),
+          NUM_PROP(kHttpServerContentCompressionLevel, 4),
+          NUM_PROP(kHttpServerContentCompressionMinimumSize, 3584),
+          BOOL_PROP(kHttpServerEnableContentCompression, false),
+          BOOL_PROP(kHttpServerEnableZstdCompression, false),
+          NUM_PROP(kHttpServerZstdContentCompressionLevel, 8),
+          BOOL_PROP(kHttpServerEnableGzipCompression, false),
           STR_PROP(
               kHttpsSupportedCiphers,
               "ECDHE-ECDSA-AES256-GCM-SHA384,AES256-GCM-SHA384"),
@@ -184,6 +196,7 @@ SystemConfig::SystemConfig() {
           NUM_PROP(kWorkerOverloadedThresholdCpuPct, 0),
           NUM_PROP(kWorkerOverloadedThresholdNumQueuedDriversHwMultiplier, 0.0),
           NUM_PROP(kWorkerOverloadedCooldownPeriodSec, 5),
+          NUM_PROP(kWorkerOverloadedSecondsToDetachWorker, 0),
           BOOL_PROP(kWorkerOverloadedTaskQueuingEnabled, false),
           NUM_PROP(kMallocHeapDumpThresholdGb, 20),
           NUM_PROP(kMallocMemMinHeapDumpInterval, 10),
@@ -200,6 +213,7 @@ SystemConfig::SystemConfig() {
           BOOL_PROP(kAsyncCacheSsdDisableFileCow, false),
           BOOL_PROP(kSsdCacheChecksumEnabled, false),
           BOOL_PROP(kSsdCacheReadVerificationEnabled, false),
+          NUM_PROP(kSsdCacheMaxEntries, 10'000'000),
           BOOL_PROP(kEnableSerializedPageChecksum, true),
           BOOL_PROP(kUseMmapAllocator, true),
           STR_PROP(kMemoryArbitratorKind, ""),
@@ -229,12 +243,19 @@ SystemConfig::SystemConfig() {
           NUM_PROP(kLogNumZombieTasks, 20),
           NUM_PROP(kAnnouncementMaxFrequencyMs, 30'000), // 30s
           NUM_PROP(kHeartbeatFrequencyMs, 0),
+          BOOL_PROP(kHttpClientHttp2Enabled, false),
+          NUM_PROP(kHttpClientHttp2MaxStreamsPerConnection, 8),
+          NUM_PROP(kHttpClientHttp2InitialStreamWindow, 1 << 23 /*8MB*/),
+          NUM_PROP(kHttpClientHttp2StreamWindow, 1 << 23 /*8MB*/),
+          NUM_PROP(kHttpClientHttp2SessionWindow, 1 << 26 /*64MB*/),
+          BOOL_PROP(kHttpClientConnectionReuseCounterEnabled, true),
           STR_PROP(kExchangeMaxErrorDuration, "3m"),
           STR_PROP(kExchangeRequestTimeout, "20s"),
           STR_PROP(kExchangeConnectTimeout, "20s"),
           BOOL_PROP(kExchangeEnableConnectionPool, true),
           BOOL_PROP(kExchangeEnableBufferCopy, true),
           BOOL_PROP(kExchangeImmediateBufferTransfer, true),
+          STR_PROP(kExchangeMaxBufferSize, "32MB"),
           NUM_PROP(kTaskRunTimeSliceMicros, 50'000),
           BOOL_PROP(kIncludeNodeInSpillPath, false),
           NUM_PROP(kOldTaskCleanUpMs, 60'000),
@@ -257,14 +278,21 @@ SystemConfig::SystemConfig() {
           BOOL_PROP(kAggregationSpillEnabled, true),
           BOOL_PROP(kOrderBySpillEnabled, true),
           NUM_PROP(kMaxSpillBytes, 100UL << 30), // 100GB
+          BOOL_PROP(kBroadcastJoinTableCachingEnabled, false),
+          BOOL_PROP(kExchangeLazyFetchingEnabled, false),
           NUM_PROP(kRequestDataSizesMaxWaitSec, 10),
           STR_PROP(kPluginDir, ""),
           NUM_PROP(kExchangeIoEvbViolationThresholdMs, 1000),
           NUM_PROP(kHttpSrvIoEvbViolationThresholdMs, 1000),
-          NUM_PROP(kMaxLocalExchangePartitionBufferSize, 65536),
+          NUM_PROP(kMaxLocalExchangeBufferSize, 32UL << 20), // 32MB
+          NUM_PROP(kMaxLocalExchangePartitionBufferSize, 65536), // 64KB
+          BOOL_PROP(kParallelOutputJoinBuildRowsEnabled, false),
+          NUM_PROP(kHashProbeBloomFilterPushdownMaxSize, 0),
           BOOL_PROP(kTextWriterEnabled, true),
+          BOOL_PROP(kTextReaderEnabled, true),
           BOOL_PROP(kCharNToVarcharImplicitCast, false),
           BOOL_PROP(kEnumTypesEnabled, true),
+          BOOL_PROP(kPlanConsistencyCheckEnabled, false),
       };
 }
 
@@ -297,6 +325,56 @@ bool SystemConfig::httpServerHttpsEnabled() const {
 
 bool SystemConfig::httpServerHttp2Enabled() const {
   return optionalProperty<bool>(kHttpServerHttp2Enabled).value();
+}
+
+uint32_t SystemConfig::httpServerIdleTimeoutMs() const {
+  return optionalProperty<uint32_t>(kHttpServerIdleTimeoutMs).value();
+}
+
+uint32_t SystemConfig::httpServerHttp2InitialReceiveWindow() const {
+  return optionalProperty<uint32_t>(kHttpServerHttp2InitialReceiveWindow)
+      .value();
+}
+
+uint32_t SystemConfig::httpServerHttp2ReceiveStreamWindowSize() const {
+  return optionalProperty<uint32_t>(kHttpServerHttp2ReceiveStreamWindowSize)
+      .value();
+}
+
+uint32_t SystemConfig::httpServerHttp2ReceiveSessionWindowSize() const {
+  return optionalProperty<uint32_t>(kHttpServerHttp2ReceiveSessionWindowSize)
+      .value();
+}
+
+uint32_t SystemConfig::httpServerHttp2MaxConcurrentStreams() const {
+  return optionalProperty<uint32_t>(kHttpServerHttp2MaxConcurrentStreams)
+      .value();
+}
+
+uint32_t SystemConfig::httpServerContentCompressionLevel() const {
+  return optionalProperty<uint32_t>(kHttpServerContentCompressionLevel).value();
+}
+
+uint32_t SystemConfig::httpServerContentCompressionMinimumSize() const {
+  return optionalProperty<uint32_t>(kHttpServerContentCompressionMinimumSize)
+      .value();
+}
+
+bool SystemConfig::httpServerEnableContentCompression() const {
+  return optionalProperty<bool>(kHttpServerEnableContentCompression).value();
+}
+
+bool SystemConfig::httpServerEnableZstdCompression() const {
+  return optionalProperty<bool>(kHttpServerEnableZstdCompression).value();
+}
+
+uint32_t SystemConfig::httpServerZstdContentCompressionLevel() const {
+  return optionalProperty<uint32_t>(kHttpServerZstdContentCompressionLevel)
+      .value();
+}
+
+bool SystemConfig::httpServerEnableGzipCompression() const {
+  return optionalProperty<bool>(kHttpServerEnableGzipCompression).value();
 }
 
 std::string SystemConfig::httpsSupportedCiphers() const {
@@ -350,6 +428,14 @@ bool SystemConfig::aggregationSpillEnabled() const {
 
 bool SystemConfig::orderBySpillEnabled() const {
   return optionalProperty<bool>(kOrderBySpillEnabled).value();
+}
+
+bool SystemConfig::broadcastJoinTableCachingEnabled() const {
+  return optionalProperty<bool>(kBroadcastJoinTableCachingEnabled).value();
+}
+
+bool SystemConfig::exchangeLazyFetchingEnabled() const {
+  return optionalProperty<bool>(kExchangeLazyFetchingEnabled).value();
 }
 
 uint64_t SystemConfig::maxSpillBytes() const {
@@ -410,6 +496,10 @@ std::string SystemConfig::remoteFunctionServerCatalogName() const {
 
 std::string SystemConfig::remoteFunctionServerSerde() const {
   return optionalProperty(kRemoteFunctionServerSerde).value();
+}
+
+std::string SystemConfig::remoteFunctionServerRestURL() const {
+  return optionalProperty(kRemoteFunctionServerRestURL).value();
 }
 
 int32_t SystemConfig::maxDriversPerTask() const {
@@ -548,6 +638,11 @@ uint32_t SystemConfig::workerOverloadedCooldownPeriodSec() const {
   return optionalProperty<uint32_t>(kWorkerOverloadedCooldownPeriodSec).value();
 }
 
+uint64_t SystemConfig::workerOverloadedSecondsToDetachWorker() const {
+  return optionalProperty<uint64_t>(kWorkerOverloadedSecondsToDetachWorker)
+      .value();
+}
+
 bool SystemConfig::workerOverloadedTaskQueuingEnabled() const {
   return optionalProperty<bool>(kWorkerOverloadedTaskQueuingEnabled).value();
 }
@@ -616,6 +711,10 @@ bool SystemConfig::ssdCacheChecksumEnabled() const {
 
 bool SystemConfig::ssdCacheReadVerificationEnabled() const {
   return optionalProperty<bool>(kSsdCacheReadVerificationEnabled).value();
+}
+
+uint64_t SystemConfig::ssdCacheMaxEntries() const {
+  return optionalProperty<uint64_t>(kSsdCacheMaxEntries).value();
 }
 
 std::string SystemConfig::shuffleName() const {
@@ -832,6 +931,33 @@ uint64_t SystemConfig::heartbeatFrequencyMs() const {
   return optionalProperty<uint64_t>(kHeartbeatFrequencyMs).value();
 }
 
+bool SystemConfig::httpClientHttp2Enabled() const {
+  return optionalProperty<bool>(kHttpClientHttp2Enabled).value();
+}
+
+uint32_t SystemConfig::httpClientHttp2MaxStreamsPerConnection() const {
+  return optionalProperty<uint32_t>(kHttpClientHttp2MaxStreamsPerConnection)
+      .value();
+}
+
+uint32_t SystemConfig::httpClientHttp2InitialStreamWindow() const {
+  return optionalProperty<uint32_t>(kHttpClientHttp2InitialStreamWindow)
+      .value();
+}
+
+uint32_t SystemConfig::httpClientHttp2StreamWindow() const {
+  return optionalProperty<uint32_t>(kHttpClientHttp2StreamWindow).value();
+}
+
+uint32_t SystemConfig::httpClientHttp2SessionWindow() const {
+  return optionalProperty<uint32_t>(kHttpClientHttp2SessionWindow).value();
+}
+
+bool SystemConfig::httpClientConnectionReuseCounterEnabled() const {
+  return optionalProperty<bool>(kHttpClientConnectionReuseCounterEnabled)
+      .value();
+}
+
 std::chrono::duration<double> SystemConfig::exchangeMaxErrorDuration() const {
   return velox::config::toDuration(
       optionalProperty(kExchangeMaxErrorDuration).value());
@@ -857,6 +983,12 @@ bool SystemConfig::exchangeEnableBufferCopy() const {
 
 bool SystemConfig::exchangeImmediateBufferTransfer() const {
   return optionalProperty<bool>(kExchangeImmediateBufferTransfer).value();
+}
+
+uint64_t SystemConfig::exchangeMaxBufferSize() const {
+  return velox::config::toCapacity(
+      optionalProperty(kExchangeMaxBufferSize).value(),
+      velox::config::CapacityUnit::BYTE);
 }
 
 int32_t SystemConfig::taskRunTimeSliceMicros() const {
@@ -932,13 +1064,30 @@ int32_t SystemConfig::httpSrvIoEvbViolationThresholdMs() const {
   return optionalProperty<int32_t>(kHttpSrvIoEvbViolationThresholdMs).value();
 }
 
+uint64_t SystemConfig::maxLocalExchangeBufferSize() const {
+  return optionalProperty<uint64_t>(kMaxLocalExchangeBufferSize).value();
+}
+
 uint64_t SystemConfig::maxLocalExchangePartitionBufferSize() const {
   return optionalProperty<uint64_t>(kMaxLocalExchangePartitionBufferSize)
       .value();
 }
 
+bool SystemConfig::parallelOutputJoinBuildRowsEnabled() const {
+  return optionalProperty<bool>(kParallelOutputJoinBuildRowsEnabled).value();
+}
+
+uint64_t SystemConfig::hashProbeBloomFilterPushdownMaxSize() const {
+  return optionalProperty<uint64_t>(kHashProbeBloomFilterPushdownMaxSize)
+      .value();
+}
+
 bool SystemConfig::textWriterEnabled() const {
   return optionalProperty<bool>(kTextWriterEnabled).value();
+}
+
+bool SystemConfig::textReaderEnabled() const {
+  return optionalProperty<bool>(kTextReaderEnabled).value();
 }
 
 bool SystemConfig::charNToVarcharImplicitCast() const {
@@ -947,6 +1096,10 @@ bool SystemConfig::charNToVarcharImplicitCast() const {
 
 bool SystemConfig::enumTypesEnabled() const {
   return optionalProperty<bool>(kEnumTypesEnabled).value();
+}
+
+bool SystemConfig::planConsistencyCheckEnabled() const {
+  return optionalProperty<bool>(kPlanConsistencyCheckEnabled).value();
 }
 
 NodeConfig::NodeConfig() {

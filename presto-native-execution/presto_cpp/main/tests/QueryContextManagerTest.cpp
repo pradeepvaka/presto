@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include "presto_cpp/main/TaskManager.h"
 #include "presto_cpp/main/common/Configs.h"
+#include "velox/core/QueryConfig.h"
 
 namespace facebook::presto {
 
@@ -79,7 +80,9 @@ TEST_F(QueryContextManagerTest, nativeSessionProperties) {
   EXPECT_TRUE(queryCtx->queryConfig().debugDisableExpressionsWithMemoization());
   EXPECT_TRUE(queryCtx->queryConfig().debugDisableExpressionsWithLazyInputs());
   EXPECT_TRUE(queryCtx->queryConfig().selectiveNimbleReaderEnabled());
-  EXPECT_TRUE(queryCtx->queryConfig().rowSizeTrackingEnabled());
+  EXPECT_EQ(
+      queryCtx->queryConfig().rowSizeTrackingMode(),
+      facebook::velox::core::QueryConfig::RowSizeTrackingMode::ENABLED_FOR_ALL);
   EXPECT_EQ(queryCtx->queryConfig().preferredOutputBatchBytes(), 10UL << 20);
   EXPECT_EQ(queryCtx->queryConfig().preferredOutputBatchRows(), 1024);
   EXPECT_EQ(queryCtx->queryConfig().spillWriteBufferSize(), 1024);
@@ -245,7 +248,7 @@ TEST_F(QueryContextManagerTest, duplicateQueryRootPoolName) {
       {false, false, true}};
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
-    queryCtxManager->testingClearCache();
+    queryCtxManager->clearCache();
 
     auto queryCtx =
         queryCtxManager->findOrCreateQueryCtx(fakeTaskId, fakeUpdateRequest);
@@ -255,7 +258,7 @@ TEST_F(QueryContextManagerTest, duplicateQueryRootPoolName) {
       queryCtx.reset();
     }
     if (testData.clearCache) {
-      queryCtxManager->testingClearCache();
+      queryCtxManager->clearCache();
     }
     auto newQueryCtx =
         queryCtxManager->findOrCreateQueryCtx(fakeTaskId, fakeUpdateRequest);
@@ -267,5 +270,61 @@ TEST_F(QueryContextManagerTest, duplicateQueryRootPoolName) {
       ASSERT_EQ(poolName, newPoolName);
     }
   }
+}
+
+TEST_F(QueryContextManagerTest, findOrCreateBatchQueryCtx) {
+  protocol::TaskId taskId = "batch.0.0.1.0";
+  protocol::SessionRepresentation session{.systemProperties = {}};
+  protocol::TaskUpdateRequest updateRequest;
+  updateRequest.session = session;
+  auto* queryCtxManager = taskManager_->getQueryContextManager();
+
+  queryCtxManager->clearCache();
+  auto queryCtx =
+      queryCtxManager->findOrCreateBatchQueryCtx(taskId, updateRequest);
+  ASSERT_NE(queryCtx, nullptr);
+  ASSERT_FALSE(queryCtx->pool()->aborted());
+
+  const auto firstPoolName = queryCtx->pool()->name();
+  ASSERT_THAT(firstPoolName, testing::HasSubstr("batch_"));
+
+  auto sameQueryCtx =
+      queryCtxManager->findOrCreateBatchQueryCtx(taskId, updateRequest);
+  ASSERT_EQ(queryCtx, sameQueryCtx);
+  ASSERT_EQ(firstPoolName, sameQueryCtx->pool()->name());
+}
+
+TEST_F(QueryContextManagerTest, findOrCreateBatchQueryCtxWithAbortedPool) {
+  protocol::TaskId taskId = "batch.0.0.1.0";
+  protocol::SessionRepresentation session{.systemProperties = {}};
+  protocol::TaskUpdateRequest updateRequest;
+  updateRequest.session = session;
+  auto* queryCtxManager = taskManager_->getQueryContextManager();
+
+  queryCtxManager->clearCache();
+  auto queryCtx =
+      queryCtxManager->findOrCreateBatchQueryCtx(taskId, updateRequest);
+  ASSERT_NE(queryCtx, nullptr);
+  ASSERT_FALSE(queryCtx->pool()->aborted());
+
+  const auto firstPoolName = queryCtx->pool()->name();
+  ASSERT_THAT(firstPoolName, testing::HasSubstr("batch_"));
+
+  try {
+    VELOX_FAIL("Test abortion");
+  } catch (...) {
+    queryCtx->pool()->abort(std::current_exception());
+  }
+  ASSERT_TRUE(queryCtx->pool()->aborted());
+
+  auto newQueryCtx =
+      queryCtxManager->findOrCreateBatchQueryCtx(taskId, updateRequest);
+  ASSERT_NE(newQueryCtx, nullptr);
+  ASSERT_NE(queryCtx, newQueryCtx);
+  ASSERT_FALSE(newQueryCtx->pool()->aborted());
+
+  const auto newPoolName = newQueryCtx->pool()->name();
+  ASSERT_THAT(newPoolName, testing::HasSubstr("batch_"));
+  ASSERT_NE(firstPoolName, newPoolName);
 }
 } // namespace facebook::presto

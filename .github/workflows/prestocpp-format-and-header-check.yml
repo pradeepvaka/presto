@@ -5,7 +5,7 @@ on:
   pull_request:
     paths:
       - presto-native-execution/**
-      - .github/workflows/prestocpp-format-and-header-check.yml
+      - .github/workflows/*.yml
 
 jobs:
   prestocpp-format-and-header-check:

@@ -15,6 +15,7 @@ package com.facebook.presto;
 
 import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.resourceGroups.QueryType;
 import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.spi.ConnectorId;
@@ -270,6 +271,12 @@ public class FullConnectorSession
     }
 
     @Override
+    public Optional<ConnectorId> getConnectorId()
+    {
+        return Optional.ofNullable(connectorId);
+    }
+
+    @Override
     public boolean isReadConstraints()
     {
         return isExploitConstraints(session);
@@ -301,6 +308,12 @@ public class FullConnectorSession
     public RuntimeStats getRuntimeStats()
     {
         return runtimeStats;
+    }
+
+    @Override
+    public Optional<QueryType> getQueryType()
+    {
+        return session.getQueryType();
     }
 
     @Override

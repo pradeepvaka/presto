@@ -29,6 +29,7 @@ import org.apache.iceberg.TableProperties;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -44,8 +45,11 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES;
+import static org.apache.iceberg.TableProperties.HIVE_LOCK_ENABLED;
 import static org.apache.iceberg.TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED;
 import static org.apache.iceberg.TableProperties.METRICS_MAX_INFERRED_COLUMN_DEFAULTS;
+import static org.apache.iceberg.TableProperties.ORC_COMPRESSION;
+import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
 import static org.apache.iceberg.TableProperties.UPDATE_MODE;
 import static org.apache.iceberg.TableProperties.WRITE_DATA_LOCATION;
 
@@ -112,6 +116,7 @@ public class IcebergTableProperties
             .add(METADATA_DELETE_AFTER_COMMIT)
             .add(METADATA_DELETE_AFTER_COMMIT_ENABLED)
             .add(METADATA_PREVIOUS_VERSIONS_MAX)
+            .add(HIVE_LOCK_ENABLED)
             .add(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX)
             .build();
 
@@ -124,7 +129,7 @@ public class IcebergTableProperties
     @Inject
     public IcebergTableProperties(IcebergConfig icebergConfig)
     {
-        List<PropertyMetadata<?>> properties = ImmutableList.<PropertyMetadata<?>>builder()
+        List<PropertyMetadata<?>> baseTableProperties = ImmutableList.<PropertyMetadata<?>>builder()
                 .add(new PropertyMetadata<>(
                         PARTITIONING_PROPERTY,
                         "Partition transforms",
@@ -198,6 +203,11 @@ public class IcebergTableProperties
                         "The maximum number of columns for which metrics are collected",
                         icebergConfig.getMetricsMaxInferredColumn(),
                         false))
+                .add(booleanProperty(
+                        HIVE_LOCK_ENABLED,
+                        "Whether to enable hive locks",
+                        null,
+                        false))
                 .add(new PropertyMetadata<>(
                         UPDATE_MODE,
                         "Update mode for the table",
@@ -211,9 +221,19 @@ public class IcebergTableProperties
                         "Desired size of split to generate during query scan planning",
                         TableProperties.SPLIT_SIZE_DEFAULT,
                         false))
+                .add(stringProperty(
+                        PARQUET_COMPRESSION,
+                        "Compression codec for Parquet format",
+                        null,
+                        false))
+                .add(stringProperty(
+                        ORC_COMPRESSION,
+                        "Compression codec for ORC format",
+                        null,
+                        false))
                 .build();
 
-        deprecatedPropertyMetadata = properties.stream()
+        deprecatedPropertyMetadata = baseTableProperties.stream()
                 .filter(prop -> DEPRECATED_PROPERTIES.inverse().containsKey(prop.getName()))
                 .map(prop -> new PropertyMetadata<>(
                         DEPRECATED_PROPERTIES.inverse().get(prop.getName()),
@@ -227,7 +247,7 @@ public class IcebergTableProperties
                 .collect(toImmutableMap(property -> property.getName(), property -> property));
 
         tableProperties = ImmutableList.<PropertyMetadata<?>>builder()
-                .addAll(properties)
+                .addAll(baseTableProperties)
                 .addAll(deprecatedPropertyMetadata.values().iterator())
                 .build();
 
@@ -270,6 +290,13 @@ public class IcebergTableProperties
         return DEPRECATED_PROPERTIES;
     }
 
+    public boolean isTablePropertySupported(String propertyName)
+    {
+        return tableProperties.stream()
+                .map(PropertyMetadata::getName)
+                .anyMatch(name -> name.equalsIgnoreCase(propertyName));
+    }
+
     public FileFormat getFileFormat(ConnectorSession session, Map<String, Object> tableProperties)
     {
         return (FileFormat) getTablePropertyWithDeprecationWarning(session, tableProperties, TableProperties.DEFAULT_FILE_FORMAT);
@@ -297,6 +324,10 @@ public class IcebergTableProperties
     public static String getWriteDataLocation(Map<String, Object> tableProperties)
     {
         return (String) tableProperties.get(WRITE_DATA_LOCATION);
+    }
+    public static Optional<String> isHiveLocksEnabled(Map<String, Object> tableProperties)
+    {
+        return tableProperties.containsKey(HIVE_LOCK_ENABLED) ? Optional.of(String.valueOf(tableProperties.get(HIVE_LOCK_ENABLED))) : Optional.empty();
     }
 
     public String getFormatVersion(ConnectorSession session, Map<String, Object> tableProperties)

@@ -226,97 +226,39 @@ velox::connector::hive::HiveBucketConversion toVeloxBucketConversion(
   return veloxBucketConversion;
 }
 
-std::unique_ptr<connector::ConnectorTableHandle> toHiveTableHandle(
-    const protocol::TupleDomain<protocol::Subfield>& domainPredicate,
-    const std::shared_ptr<protocol::RowExpression>& remainingPredicate,
-    bool isPushdownFilterEnabled,
-    const std::string& tableName,
-    const protocol::List<protocol::Column>& dataColumns,
-    const protocol::TableHandle& tableHandle,
-    const protocol::Map<protocol::String, protocol::String>& tableParameters,
-    const VeloxExprConverter& exprConverter,
-    const TypeParser& typeParser) {
-  common::SubfieldFilters subfieldFilters;
-  auto domains = domainPredicate.domains;
-  for (const auto& domain : *domains) {
-    auto filter = domain.second;
-    subfieldFilters[common::Subfield(domain.first)] =
-        toFilter(domain.second, exprConverter, typeParser);
-  }
-
-  auto remainingFilter = exprConverter.toVeloxExpr(remainingPredicate);
-  if (auto constant = std::dynamic_pointer_cast<const core::ConstantTypedExpr>(
-          remainingFilter)) {
-    bool value = constant->value().value<bool>();
-    VELOX_CHECK(value, "Unexpected always-false remaining predicate");
-
-    // Use null for always-true filter.
-    remainingFilter = nullptr;
-  }
-
-  RowTypePtr finalDataColumns;
-  if (!dataColumns.empty()) {
-    std::vector<std::string> names;
-    std::vector<TypePtr> types;
-    velox::type::fbhive::HiveTypeParser hiveTypeParser;
-    names.reserve(dataColumns.size());
-    types.reserve(dataColumns.size());
-    for (auto& column : dataColumns) {
-      std::string name = column.name;
-      folly::toLowerAscii(name);
-      names.emplace_back(std::move(name));
-      auto parsedType = hiveTypeParser.parse(column.type);
-      // The type from the metastore may have upper case letters
-      // in field names, convert them all to lower case to be
-      // compatible with Presto.
-      types.push_back(VELOX_DYNAMIC_TYPE_DISPATCH(
-          fieldNamesToLowerCase, parsedType->kind(), parsedType));
+dwio::common::FileFormat toVeloxFileFormat(
+    const presto::protocol::hive::StorageFormat& format) {
+  if (format.inputFormat == "com.facebook.hive.orc.OrcInputFormat") {
+    return dwio::common::FileFormat::DWRF;
+  } else if (
+      format.inputFormat == "org.apache.hadoop.hive.ql.io.orc.OrcInputFormat") {
+    return dwio::common::FileFormat::ORC;
+  } else if (
+      format.inputFormat ==
+      "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat") {
+    return dwio::common::FileFormat::PARQUET;
+  } else if (format.inputFormat == "org.apache.hadoop.mapred.TextInputFormat") {
+    if (format.serDe == "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe") {
+      return dwio::common::FileFormat::TEXT;
+    } else if (format.serDe == "org.apache.hive.hcatalog.data.JsonSerDe") {
+      return dwio::common::FileFormat::JSON;
     }
-    finalDataColumns = ROW(std::move(names), std::move(types));
+  } else if (
+      format.inputFormat ==
+      "org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat") {
+    if (format.serDe ==
+        "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe") {
+      return dwio::common::FileFormat::PARQUET;
+    }
+  } else if (format.inputFormat == "com.facebook.alpha.AlphaInputFormat") {
+    // ALPHA has been renamed in Velox to NIMBLE.
+    return dwio::common::FileFormat::NIMBLE;
   }
-
-  if (tableParameters.empty()) {
-    return std::make_unique<connector::hive::HiveTableHandle>(
-        tableHandle.connectorId,
-        tableName,
-        isPushdownFilterEnabled,
-        std::move(subfieldFilters),
-        remainingFilter,
-        finalDataColumns);
-  }
-
-  std::unordered_map<std::string, std::string> finalTableParameters = {};
-  finalTableParameters.reserve(tableParameters.size());
-  for (const auto& [key, value] : tableParameters) {
-    finalTableParameters[key] = value;
-  }
-
-  return std::make_unique<connector::hive::HiveTableHandle>(
-      tableHandle.connectorId,
-      tableName,
-      isPushdownFilterEnabled,
-      std::move(subfieldFilters),
-      remainingFilter,
-      finalDataColumns,
-      finalTableParameters);
+  VELOX_UNSUPPORTED(
+      "Unsupported file format: {} {}", format.inputFormat, format.serDe);
 }
 
 } // namespace
-
-connector::hive::HiveColumnHandle::ColumnType toHiveColumnType(
-    protocol::hive::ColumnType type) {
-  switch (type) {
-    case protocol::hive::ColumnType::PARTITION_KEY:
-      return connector::hive::HiveColumnHandle::ColumnType::kPartitionKey;
-    case protocol::hive::ColumnType::REGULAR:
-      return connector::hive::HiveColumnHandle::ColumnType::kRegular;
-    case protocol::hive::ColumnType::SYNTHESIZED:
-      return connector::hive::HiveColumnHandle::ColumnType::kSynthesized;
-    default:
-      VELOX_UNSUPPORTED(
-          "Unsupported Hive column type: {}.", toJsonString(type));
-  }
-}
 
 std::unique_ptr<velox::connector::ConnectorSplit>
 HivePrestoToVeloxConnector::toVeloxSplit(
@@ -393,18 +335,7 @@ std::unique_ptr<velox::connector::ConnectorTableHandle>
 HivePrestoToVeloxConnector::toVeloxTableHandle(
     const protocol::TableHandle& tableHandle,
     const VeloxExprConverter& exprConverter,
-    const TypeParser& typeParser,
-    velox::connector::ColumnHandleMap& assignments) const {
-  auto addSynthesizedColumn = [&](const std::string& name,
-                                  protocol::hive::ColumnType columnType,
-                                  const protocol::ColumnHandle& column) {
-    if (toHiveColumnType(columnType) ==
-        velox::connector::hive::HiveColumnHandle::ColumnType::kSynthesized) {
-      if (assignments.count(name) == 0) {
-        assignments.emplace(name, toVeloxColumnHandle(&column, typeParser));
-      }
-    }
-  };
+    const TypeParser& typeParser) const {
   auto hiveLayout =
       std::dynamic_pointer_cast<const protocol::hive::HiveTableLayoutHandle>(
           tableHandle.connectorTableLayout);
@@ -412,13 +343,24 @@ HivePrestoToVeloxConnector::toVeloxTableHandle(
       hiveLayout,
       "Unexpected layout type {}",
       tableHandle.connectorTableLayout->_type);
+
+  std::unordered_set<std::string> columnNames;
+  std::vector<velox::connector::hive::HiveColumnHandlePtr> columnHandles;
   for (const auto& entry : hiveLayout->partitionColumns) {
-    assignments.emplace(entry.name, toVeloxColumnHandle(&entry, typeParser));
+    if (columnNames.emplace(entry.name).second) {
+      columnHandles.emplace_back(
+          std::dynamic_pointer_cast<velox::connector::hive::HiveColumnHandle>(
+              std::shared_ptr(toVeloxColumnHandle(&entry, typeParser))));
+    }
   }
 
   // Add synthesized columns to the TableScanNode columnHandles as well.
   for (const auto& entry : hiveLayout->predicateColumns) {
-    addSynthesizedColumn(entry.first, entry.second.columnType, entry.second);
+    if (columnNames.emplace(entry.second.name).second) {
+      columnHandles.emplace_back(
+          std::dynamic_pointer_cast<velox::connector::hive::HiveColumnHandle>(
+              std::shared_ptr(toVeloxColumnHandle(&entry.second, typeParser))));
+    }
   }
 
   auto hiveTableHandle =
@@ -442,6 +384,7 @@ HivePrestoToVeloxConnector::toVeloxTableHandle(
       tableName,
       hiveLayout->dataColumns,
       tableHandle,
+      columnHandles,
       hiveLayout->tableParameters,
       exprConverter,
       typeParser);

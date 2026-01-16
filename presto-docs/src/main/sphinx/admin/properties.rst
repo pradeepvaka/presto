@@ -157,7 +157,29 @@ The corresponding session property is :ref:`admin/properties-session:\`\`offset_
 
 Maximum object size in bytes that can be considered serializable in a function call by the coordinator.
 
-The corresponding session property is :ref:`admin/properties-session:\`\`max_serializable_object_size\`\``. 
+The corresponding session property is :ref:`admin/properties-session:\`\`max_serializable_object_size\`\``.
+
+``max-prefixes-count``
+^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Minimum value:** ``1``
+* **Default value:** ``100``
+
+Maximum number of prefixes (catalog/schema/table scopes used to narrow metadata lookups) that Presto generates when querying information_schema.
+If the number of computed prefixes exceeds this limit, Presto falls back to a single broader prefix (catalog only).
+If it’s below the limit, the generated prefixes are used.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`max_prefixes_count\`\``.
+
+``cluster-tag``
+^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Default value:** (none)
+
+An optional identifier for the cluster. When set, this tag is included in the response from the 
+``/v1/cluster`` REST API endpoint, allowing clients to identify which cluster provided the response.
 
 Memory Management Properties
 ----------------------------
@@ -570,6 +592,24 @@ tasks. If the task output is hash partitioned, then the buffer will be
 shared across all of the partitioned consumers. Increasing this value may
 improve network throughput for data transferred between stages if the
 network has high latency or if there are many nodes in the cluster.
+
+``use-connector-provided-serialization-codecs``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enables the use of custom connector-provided serialization codecs for handles. 
+This feature allows connectors to use their own serialization format for
+handle objects (such as table handles, column handles, and splits) instead
+of standard JSON serialization.
+
+When enabled, connectors that provide a ``ConnectorCodecProvider`` with 
+appropriate codecs will have their handles serialized using custom binary 
+formats, which are then Base64-encoded for transport. Connectors without 
+codec support automatically fall back to standard JSON serialization. 
+Internal Presto handles (prefixed with ``$``) always use JSON serialization 
+regardless of this setting.
 
 .. _task-properties:
 
@@ -1034,6 +1074,32 @@ being collected by ``ANALYZE``, and also prevents the existing histograms from b
 during query optimization. This behavior can be controlled on a per-query basis using the
 ``optimizer_use_histograms`` session property.
 
+``optimizer.table-scan-shuffle-parallelism-threshold``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``double``
+* **Default value:** ``0.1``
+
+Parallelism threshold for adding a shuffle above table scan. When the table's parallelism factor
+is below this threshold (0.0-1.0) and ``optimizer.table-scan-shuffle-strategy`` is ``COST_BASED``,
+a round-robin shuffle exchange is added above the table scan to redistribute data.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`table_scan_shuffle_parallelism_threshold\`\``.
+
+``optimizer.table-scan-shuffle-strategy``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Allowed values:** ``DISABLED``, ``ALWAYS_ENABLED``, ``COST_BASED``
+* **Default value:** ``DISABLED``
+
+Strategy for adding shuffle above table scan to redistribute data. When set to ``DISABLED``,
+no shuffle is added. When set to ``ALWAYS_ENABLED``, a round-robin shuffle exchange is always
+added above table scans. When set to ``COST_BASED``, a shuffle is added only when the table's
+parallelism factor is below the ``optimizer.table-scan-shuffle-parallelism-threshold``.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`table_scan_shuffle_strategy\`\``.
+
 Planner Properties
 ------------------
 
@@ -1225,3 +1291,67 @@ Comma-separated list of error codes that allow cross-cluster retry. When a query
 fails with one of these error codes, it can be automatically retried on a backup
 cluster if a retry URL is provided. Available error codes include standard Presto
 error codes such as ``REMOTE_TASK_ERROR``, ``CLUSTER_OUT_OF_MEMORY``, etc.
+
+View and Materialized View Properties
+-------------------------------------
+
+``default-view-security-mode``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Allowed values:** ``DEFINER``, ``INVOKER``
+* **Default value:** ``DEFINER``
+
+Sets the default security mode for views and materialized views when the ``SECURITY``
+clause is not explicitly specified in ``CREATE VIEW`` or ``CREATE MATERIALIZED VIEW``
+statements.
+
+* ``DEFINER``: Views execute with the permissions of the user who created them
+* ``INVOKER``: Views execute with the permissions of the user querying them
+
+The corresponding session property is :ref:`admin/properties-session:\`\`default_view_security_mode\`\``.
+
+``experimental.legacy-materialized-views``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``true``
+
+Use legacy materialized views implementation. Set to ``false`` to enable materialized
+views with security modes (DEFINER and INVOKER), automatic query rewriting, and
+freshness tracking.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`legacy_materialized_views\`\``.
+
+.. warning::
+
+    Materialized views are experimental. The SPI and behavior may change in future releases.
+
+``experimental.allow-legacy-materialized-views-toggle``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Allow the ``legacy_materialized_views`` session property to be changed at runtime.
+By default, the session property value is locked to the server configuration value
+and cannot be changed per-session.
+
+Set this to ``true`` to allow users to toggle between legacy and new materialized
+views implementations using the session property. This is intended for testing and
+migration purposes only.
+
+.. warning::
+
+    This should only be enabled in non-production environments.
+
+``materialized-view-stale-read-behavior``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Default value:** ``USE_VIEW_QUERY``
+
+Controls behavior when a materialized view is stale and no per-view staleness config is set.
+Valid values are ``FAIL`` (throw an error) or ``USE_VIEW_QUERY`` (query base tables instead).
+
+The corresponding session property is :ref:`admin/properties-session:\`\`materialized_view_stale_read_behavior\`\``.

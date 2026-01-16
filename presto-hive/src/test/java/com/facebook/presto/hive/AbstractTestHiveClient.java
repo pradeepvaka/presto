@@ -29,6 +29,7 @@ import com.facebook.presto.common.predicate.NullableValue;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.resourceGroups.QueryType;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.MapType;
 import com.facebook.presto.common.type.NamedTypeSignature;
@@ -1251,6 +1252,12 @@ public abstract class AbstractTestHiveClient
             }
 
             @Override
+            public Optional<QueryType> getQueryType()
+            {
+                return session.getQueryType();
+            }
+
+            @Override
             public ConnectorSession forConnectorId(ConnectorId connectorId)
             {
                 return this;
@@ -1651,7 +1658,7 @@ public abstract class AbstractTestHiveClient
         assertInstanceOf(expectedTableLayoutHandle, HiveTableLayoutHandle.class);
         HiveTableLayoutHandle actual = (HiveTableLayoutHandle) actualTableLayoutHandle;
         HiveTableLayoutHandle expected = (HiveTableLayoutHandle) expectedTableLayoutHandle;
-        assertExpectedPartitions(actual.getPartitions().get(), expected.getPartitions().get());
+        assertExpectedPartitions(actual.getPartitions().map(PartitionSet::getFullyLoadedPartitions).get(), expected.getPartitions().get());
     }
 
     protected void assertExpectedPartitions(List<HivePartition> actualPartitions, Iterable<HivePartition> expectedPartitions)
@@ -5357,6 +5364,7 @@ public abstract class AbstractTestHiveClient
     protected List<?> getAllPartitions(ConnectorTableLayoutHandle layoutHandle)
     {
         return ((HiveTableLayoutHandle) layoutHandle).getPartitions()
+                .map(PartitionSet::getFullyLoadedPartitions)
                 .orElseThrow(() -> new AssertionError("layout has no partitions"));
     }
 

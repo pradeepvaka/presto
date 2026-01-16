@@ -31,11 +31,10 @@ import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveColumnConverterProvider;
 import com.facebook.presto.hive.HiveCompressionCodec;
-import com.facebook.presto.hive.HivePartition;
 import com.facebook.presto.hive.HivePartitionKey;
 import com.facebook.presto.hive.HiveStorageFormat;
 import com.facebook.presto.hive.HiveType;
-import com.facebook.presto.hive.PartitionNameWithVersion;
+import com.facebook.presto.hive.PartitionSet;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.MetastoreContext;
@@ -88,7 +87,6 @@ import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.iceberg.view.View;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -146,8 +144,8 @@ import static com.facebook.presto.iceberg.IcebergPartitionType.IDENTITY;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.getCompressionCodec;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.isMergeOnReadModeEnabled;
 import static com.facebook.presto.iceberg.IcebergTableProperties.getWriteDataLocation;
+import static com.facebook.presto.iceberg.IcebergTableProperties.isHiveLocksEnabled;
 import static com.facebook.presto.iceberg.TypeConverter.toIcebergType;
-import static com.facebook.presto.iceberg.TypeConverter.toPrestoType;
 import static com.facebook.presto.iceberg.util.IcebergPrestoModelConverters.toIcebergTableIdentifier;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -191,6 +189,7 @@ import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT_DEFAULT;
 import static org.apache.iceberg.TableProperties.DELETE_MODE;
 import static org.apache.iceberg.TableProperties.DELETE_MODE_DEFAULT;
 import static org.apache.iceberg.TableProperties.FORMAT_VERSION;
+import static org.apache.iceberg.TableProperties.HIVE_LOCK_ENABLED;
 import static org.apache.iceberg.TableProperties.MERGE_MODE;
 import static org.apache.iceberg.TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED;
 import static org.apache.iceberg.TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT;
@@ -274,7 +273,16 @@ public final class IcebergUtil
         if (!(catalog instanceof ViewCatalog)) {
             throw new PrestoException(NOT_SUPPORTED, "This connector does not support get views");
         }
-        return ((ViewCatalog) catalog).loadView(toIcebergTableIdentifier(table, catalogFactory.isNestedNamespaceEnabled()));
+        return ((ViewCatalog) catalog).loadView(toIcebergTableIdentifier(getBaseSchemaTableName(table), catalogFactory.isNestedNamespaceEnabled()));
+    }
+
+    /**
+     * Removes Iceberg-specific suffixes from the table name
+     */
+    private static SchemaTableName getBaseSchemaTableName(SchemaTableName table)
+    {
+        IcebergTableName icebergTableName = IcebergTableName.from(table.getTableName());
+        return new SchemaTableName(table.getSchemaName(), icebergTableName.getTableName());
     }
 
     public static List<IcebergColumnHandle> getPartitionKeyColumnHandles(IcebergTableHandle tableHandle, Table table, TypeManager typeManager)
@@ -363,6 +371,25 @@ public final class IcebergUtil
                 .collect(toImmutableList());
     }
 
+    public static List<IcebergColumnHandle> getColumnsForWrite(Schema schema, PartitionSpec partitionSpec, TypeManager typeManager)
+    {
+        return getColumnsForWrite(schema.columns().stream().map(NestedField::fieldId), schema, partitionSpec, typeManager);
+    }
+
+    private static List<IcebergColumnHandle> getColumnsForWrite(Stream<Integer> fields, Schema schema, PartitionSpec partitionSpec, TypeManager typeManager)
+    {
+        Set<Integer> partitionSourceIds = partitionSpec.fields().stream()
+                .map(PartitionField::sourceId)
+                .collect(toImmutableSet());
+
+        return fields
+                .map(schema::findField)
+                .map(column -> partitionSourceIds.contains(column.fieldId()) ?
+                        IcebergColumnHandle.create(column, typeManager, PARTITION_KEY) :
+                        IcebergColumnHandle.create(column, typeManager, REGULAR))
+                .collect(toImmutableList());
+    }
+
     public static Map<PartitionField, Integer> getIdentityPartitions(PartitionSpec partitionSpec)
     {
         // TODO: expose transform information in Iceberg library
@@ -390,10 +417,20 @@ public final class IcebergUtil
         return columns.stream()
                 .map(column -> new Column(
                         column.name(),
-                        HiveType.toHiveType(HiveSchemaUtil.convert(column.type())),
+                        icebergTypeToHiveType(column.type()),
                         Optional.empty(),
                         Optional.empty()))
                 .collect(toImmutableList());
+    }
+
+    private static HiveType icebergTypeToHiveType(org.apache.iceberg.types.Type icebergType)
+    {
+        // Special handling for TIME type: use bigint instead of 'string'
+        if (icebergType.typeId() == org.apache.iceberg.types.Type.TypeID.TIME) {
+            return HiveType.HIVE_LONG;
+        }
+
+        return HiveType.toHiveType(HiveSchemaUtil.convert(icebergType));
     }
 
     public static FileFormat getFileFormat(Table table)
@@ -552,7 +589,7 @@ public final class IcebergUtil
         }
     }
 
-    private static NullableValue parsePartitionValue(
+    protected static NullableValue parsePartitionValue(
             FileFormat fileFormat,
             String partitionStringValue,
             Type prestoType,
@@ -596,7 +633,7 @@ public final class IcebergUtil
         return matches;
     }
 
-    public static List<HivePartition> getPartitions(
+    public static PartitionSet getPartitions(
             TypeManager typeManager,
             ConnectorTableHandle tableHandle,
             Table icebergTable,
@@ -604,95 +641,14 @@ public final class IcebergUtil
             List<IcebergColumnHandle> partitionColumns,
             RuntimeStats runtimeStats)
     {
-        IcebergTableName name = ((IcebergTableHandle) tableHandle).getIcebergTableName();
-        FileFormat fileFormat = getFileFormat(icebergTable);
-        // Empty iceberg table would cause `snapshotId` not present
-        Optional<Long> snapshotId = resolveSnapshotIdByName(icebergTable, name);
-        if (!snapshotId.isPresent()) {
-            return ImmutableList.of();
-        }
-
-        TableScan tableScan = icebergTable
-                .newScan()
-                .metricsReporter(new RuntimeStatsMetricsReporter(runtimeStats))
-                .filter(toIcebergExpression(getNonMetadataColumnConstraints(constraint
-                        .getSummary()
-                        .simplify())))
-                .useSnapshot(snapshotId.get());
-
-        Set<HivePartition> partitions = new HashSet<>();
-
-        try (CloseableIterable<FileScanTask> fileScanTasks = tableScan.planFiles()) {
-            for (FileScanTask fileScanTask : fileScanTasks) {
-                // If exists delete files, skip the metadata optimization based on partition values as they might become incorrect
-                if (!fileScanTask.deletes().isEmpty()) {
-                    return ImmutableList.of(new HivePartition(((IcebergTableHandle) tableHandle).getSchemaTableName()));
-                }
-                StructLike partition = fileScanTask.file().partition();
-                PartitionSpec spec = fileScanTask.spec();
-                Map<PartitionField, Integer> fieldToIndex = getIdentityPartitions(spec);
-                ImmutableMap.Builder<ColumnHandle, NullableValue> builder = ImmutableMap.builder();
-
-                fieldToIndex.forEach((field, index) -> {
-                    int id = field.sourceId();
-                    org.apache.iceberg.types.Type type = spec.schema().findType(id);
-                    Class<?> javaClass = type.typeId().javaClass();
-                    Object value = partition.get(index, javaClass);
-                    String partitionStringValue;
-
-                    if (value == null) {
-                        partitionStringValue = null;
-                    }
-                    else {
-                        if (type.typeId() == FIXED || type.typeId() == BINARY) {
-                            partitionStringValue = Base64.getEncoder().encodeToString(((ByteBuffer) value).array());
-                        }
-                        else {
-                            partitionStringValue = value.toString();
-                        }
-                    }
-
-                    NullableValue partitionValue = parsePartitionValue(fileFormat, partitionStringValue, toPrestoType(type, typeManager), partition.toString());
-                    Optional<IcebergColumnHandle> column = partitionColumns.stream()
-                            .filter(icebergColumnHandle -> Objects.equals(icebergColumnHandle.getId(), field.sourceId()))
-                            .findAny();
-
-                    if (column.isPresent()) {
-                        builder.put(column.get(), partitionValue);
-                    }
-                });
-
-                Map<ColumnHandle, NullableValue> values = builder.build();
-                HivePartition newPartition = new HivePartition(
-                        ((IcebergTableHandle) tableHandle).getSchemaTableName(),
-                        new PartitionNameWithVersion(partition.toString(), Optional.empty()),
-                        values);
-
-                boolean isIncludePartition = true;
-                Map<ColumnHandle, Domain> domains = constraint.getSummary().getDomains().get();
-                for (IcebergColumnHandle column : partitionColumns) {
-                    NullableValue value = newPartition.getKeys().get(column);
-                    Domain allowedDomain = domains.get(column);
-                    if (allowedDomain != null && !allowedDomain.includesNullableValue(value.getValue())) {
-                        isIncludePartition = false;
-                        break;
-                    }
-                }
-
-                if (constraint.predicate().isPresent() && !constraint.predicate().get().test(newPartition.getKeys())) {
-                    isIncludePartition = false;
-                }
-
-                if (isIncludePartition) {
-                    partitions.add(newPartition);
-                }
-            }
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-
-        return new ArrayList<>(partitions);
+        return new PartitionSet(
+                new IcebergPartitionLoader(
+                        typeManager,
+                        tableHandle,
+                        icebergTable,
+                        constraint,
+                        partitionColumns,
+                        runtimeStats));
     }
 
     public static Optional<Schema> tryGetSchema(Table table)
@@ -1209,6 +1165,8 @@ public final class IcebergUtil
         propertiesBuilder.put(METRICS_MAX_INFERRED_COLUMN_DEFAULTS, String.valueOf(metricsMaxInferredColumn));
 
         propertiesBuilder.put(SPLIT_SIZE, String.valueOf(IcebergTableProperties.getTargetSplitSize(tableMetadata.getProperties())));
+
+        isHiveLocksEnabled(tableMetadata.getProperties()).ifPresent(value -> propertiesBuilder.put(HIVE_LOCK_ENABLED, value));
 
         return propertiesBuilder.build();
     }

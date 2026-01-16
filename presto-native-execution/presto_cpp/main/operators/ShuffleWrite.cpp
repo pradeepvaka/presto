@@ -26,7 +26,7 @@ velox::core::PlanNodeId deserializePlanNodeId(const folly::dynamic& obj) {
 #define CALL_SHUFFLE(call, methodName)                                \
   try {                                                               \
     call;                                                             \
-  } catch (const VeloxException& e) {                                 \
+  } catch (const VeloxException&) {                                   \
     throw;                                                            \
   } catch (const std::exception& e) {                                 \
     VELOX_FAIL("ShuffleWriter::{} failed: {}", methodName, e.what()); \
@@ -120,19 +120,34 @@ class ShuffleWrite : public Operator {
 
   void recordShuffleWriteClientStats() {
     auto lockedStats = stats_.wlock();
-    const auto shuffleStats = shuffle_->stats();
-    for (const auto& [name, value] : shuffleStats) {
-      lockedStats->runtimeStats[name] = RuntimeMetric(value);
+    std::optional<uint64_t> backgroundCpuTimeNanosOpt = std::nullopt;
+    if (shuffle_->supportsMetrics()) {
+      const auto shuffleMetrics = shuffle_->metrics();
+      for (const auto& [name, metric] : shuffleMetrics) {
+        lockedStats->runtimeStats[name] = metric;
+      }
+
+      if (shuffleMetrics.contains(Operator::kBackgroundCpuTimeNanos)) {
+        backgroundCpuTimeNanosOpt =
+            shuffleMetrics.at(Operator::kBackgroundCpuTimeNanos).sum;
+      }
+    } else {
+      const auto shuffleStats = shuffle_->stats();
+      for (const auto& [name, value] : shuffleStats) {
+        lockedStats->runtimeStats[name] = RuntimeMetric(value);
+      }
+
+      if (shuffleStats.contains(Operator::kBackgroundCpuTimeNanos)) {
+        backgroundCpuTimeNanosOpt =
+            shuffleStats.at(Operator::kBackgroundCpuTimeNanos);
+      }
     }
 
-    auto backgroundCpuTimeMs =
-        shuffleStats.find(ExchangeClient::kBackgroundCpuTimeMs);
-    if (backgroundCpuTimeMs != shuffleStats.end()) {
+    if (backgroundCpuTimeNanosOpt.has_value()) {
       const CpuWallTiming backgroundTiming{
-          static_cast<uint64_t>(1),
-          0,
-          static_cast<uint64_t>(backgroundCpuTimeMs->second) *
-              Timestamp::kNanosecondsInMillisecond};
+          .count = static_cast<uint64_t>(1),
+          .wallNanos = 0,
+          .cpuNanos = static_cast<uint64_t>(*backgroundCpuTimeNanosOpt)};
       lockedStats->backgroundTiming.clear();
       lockedStats->backgroundTiming.add(backgroundTiming);
     }

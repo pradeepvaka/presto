@@ -52,6 +52,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.errorprone.annotations.ThreadSafe;
@@ -521,7 +522,8 @@ class Query
                     DynamicSliceOutput sliceOutput = new DynamicSliceOutput(1000);
                     writeSerializedPage(sliceOutput, serializedPage);
 
-                    String encodedPage = BASE64_ENCODER.encodeToString(sliceOutput.slice().byteArray());
+                    byte[] binaryResultArray = sliceOutput.slice().byteArray();
+                    String encodedPage = BaseEncoding.base64().encode(binaryResultArray, 0, sliceOutput.size());
                     pages.add(encodedPage);
                 }
                 if (rows > 0) {
@@ -561,7 +563,7 @@ class Query
 
         // TODO: figure out a better way to do this
         // grab the update count for non-queries
-        if ((data != null) && (queryInfo.getUpdateType() != null) && (updateCount == null) &&
+        if ((data != null) && (queryInfo.getUpdateInfo() != null) && (updateCount == null) &&
                 (columns.size() == 1) && (columns.get(0).getType().equals(StandardTypes.BIGINT))) {
             Iterator<List<Object>> iterator = data.iterator();
             if (iterator.hasNext()) {
@@ -632,7 +634,7 @@ class Query
                 toStatementStats(queryInfo),
                 toQueryError(queryInfo),
                 queryInfo.getWarnings(),
-                queryInfo.getUpdateType(),
+                queryInfo.getUpdateInfo() != null ? queryInfo.getUpdateInfo().getUpdateType() : null,
                 updateCount);
 
         // cache the new result

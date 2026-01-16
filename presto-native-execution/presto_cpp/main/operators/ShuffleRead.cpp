@@ -14,7 +14,6 @@
 #include "presto_cpp/main/operators/ShuffleRead.h"
 #include "presto_cpp/main/operators/ShuffleExchangeSource.h"
 #include "velox/common/Casts.h"
-#include "velox/exec/Exchange.h"
 #include "velox/row/CompactRow.h"
 
 using namespace facebook::velox::exec;
@@ -25,61 +24,30 @@ velox::core::PlanNodeId deserializePlanNodeId(const folly::dynamic& obj) {
   return obj["id"].asString();
 }
 
-namespace {
-class ShuffleRead : public Exchange {
- public:
-  ShuffleRead(
-      int32_t operatorId,
-      DriverCtx* ctx,
-      const std::shared_ptr<const ShuffleReadNode>& shuffleReadNode,
-      std::shared_ptr<ExchangeClient> exchangeClient)
-      : Exchange(
-            operatorId,
-            ctx,
-            std::make_shared<core::ExchangeNode>(
-                shuffleReadNode->id(),
-                shuffleReadNode->outputType(),
-                VectorSerde::Kind::kCompactRow),
-            exchangeClient,
-            "ShuffleRead") {
-    initStats();
-  }
-
-  RowVectorPtr getOutput() override;
-
-  void close() override;
-
- protected:
-  VectorSerde* getSerde() override {
-    VELOX_UNSUPPORTED("ShuffleReadOperator doesn't use serde");
-  }
-
- private:
-  static inline const std::string kShuffleDecodeTime{"shuffleDecodeWallNanos"};
-  static inline const std::string kShuffleNumBatchesPerRead{
-      "shuffleNumBatchesPerRead"};
-  static inline const std::string kShuffleNumBatches{"shuffleNumBatches"};
-
-  void initStats();
-
-  void resetOutputState();
-
-  int64_t numBatches_{0};
-  std::unordered_map<std::string, velox::RuntimeMetric> runtimeStats_;
-
-  size_t nextRow_{0};
-  size_t nextPage_{0};
-  // Reusable buffers.
-  std::vector<std::string_view> rows_;
-  std::vector<size_t> pageRows_;
-};
+ShuffleRead::ShuffleRead(
+    int32_t operatorId,
+    DriverCtx* ctx,
+    const std::shared_ptr<const ShuffleReadNode>& shuffleReadNode,
+    std::shared_ptr<ExchangeClient> exchangeClient)
+    : Exchange(
+          operatorId,
+          ctx,
+          std::make_shared<core::ExchangeNode>(
+              shuffleReadNode->id(),
+              shuffleReadNode->outputType(),
+              VectorSerde::Kind::kCompactRow),
+          exchangeClient,
+          "ShuffleRead") {
+  initStats();
+}
 
 void ShuffleRead::initStats() {
   VELOX_CHECK(runtimeStats_.empty());
   runtimeStats_.insert(
       std::pair{kShuffleDecodeTime, velox::RuntimeCounter::Unit::kNanos});
   runtimeStats_.insert(
-      std::pair{kShuffleNumBatchesPerRead, velox::RuntimeCounter::Unit::kNone});
+      std::pair{
+          kShufflePagesPerInputBatch, velox::RuntimeCounter::Unit::kNone});
 }
 
 void ShuffleRead::resetOutputState() {
@@ -107,6 +75,8 @@ RowVectorPtr ShuffleRead::getOutput() {
     VELOX_CHECK_EQ(nextRow_, 0);
     size_t numRows{0};
     for (const auto& page : currentPages_) {
+      auto* batch = checkedPointerCast<ShuffleSerializedPage>(page.get());
+      VELOX_CHECK_LE(batch->size(), std::numeric_limits<int32_t>::max());
       rawInputBytes += page->size();
       const auto pageRows = page->numRows().value();
       pageRows_.emplace_back(
@@ -115,15 +85,15 @@ RowVectorPtr ShuffleRead::getOutput() {
     }
     rows_.reserve(numRows);
     for (const auto& page : currentPages_) {
-      auto* batch = checked_pointer_cast<ShuffleRowBatch>(page.get());
+      auto* batch = checkedPointerCast<ShuffleSerializedPage>(page.get());
       const auto& rows = batch->rows();
       for (const auto& row : rows) {
         rows_.emplace_back(row);
       }
     }
     if (!currentPages_.empty()) {
-      runtimeStats_[kShuffleNumBatchesPerRead].addValue(currentPages_.size());
-      numBatches_ += currentPages_.size();
+      runtimeStats_[kShufflePagesPerInputBatch].addValue(currentPages_.size());
+      ++numInputBatches_;
     }
   }
   VELOX_CHECK_LE(nextRow_, rows_.size());
@@ -177,12 +147,11 @@ void ShuffleRead::close() {
     }
     lockedStats->runtimeStats[name] = metric;
   }
-  if (numBatches_ != 0) {
+  if (numInputBatches_ != 0) {
     lockedStats->addRuntimeStat(
-        kShuffleNumBatches, RuntimeCounter(numBatches_));
+        kShuffleInputBatches, RuntimeCounter(numInputBatches_));
   }
 }
-} // namespace
 
 folly::dynamic ShuffleReadNode::serialize() const {
   auto obj = PlanNode::serialize();

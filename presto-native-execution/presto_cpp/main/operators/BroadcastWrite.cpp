@@ -12,34 +12,27 @@
  * limitations under the License.
  */
 #include "presto_cpp/main/operators/BroadcastWrite.h"
-#include "presto_cpp/main/common/Configs.h"
-#include "presto_cpp/main/operators/BroadcastFactory.h"
+#include <boost/lexical_cast.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include "presto_cpp/main/operators/BroadcastFile.h"
+#include "velox/common/file/FileSystems.h"
+#include "velox/exec/OperatorUtils.h"
 
 using namespace facebook::velox::exec;
 using namespace facebook::velox;
 
 namespace facebook::presto::operators {
 namespace {
+std::string makeUuid() {
+  return boost::lexical_cast<std::string>(boost::uuids::random_generator()());
+}
+
 velox::core::PlanNodeId deserializePlanNodeId(const folly::dynamic& obj) {
   return obj["id"].asString();
 }
 
-// TODO: This is a copy from Exchange.cpp. We should refactor
-// such that this method is globally accessible from a single location. This is
-// to prevent diverges of serde options during write and read.
-std::unique_ptr<VectorSerde::Options> getVectorSerdeOptions(
-    const core::QueryConfig& queryConfig,
-    VectorSerde::Kind kind) {
-  std::unique_ptr<VectorSerde::Options> options =
-      kind == VectorSerde::Kind::kPresto
-      ? std::make_unique<serializer::presto::PrestoVectorSerde::PrestoOptions>()
-      : std::make_unique<VectorSerde::Options>();
-  options->compressionKind =
-      common::stringToCompressionKind(queryConfig.shuffleCompressionKind());
-  return options;
-}
-
-// BroadcastWriteOperator writes input RowVectors to specified file.
+/// BroadcastWriteOperator writes input RowVectors to specified file.
 class BroadcastWriteOperator : public Operator {
  public:
   BroadcastWriteOperator(
@@ -58,12 +51,19 @@ class BroadcastWriteOperator : public Operator {
             planNode->serdeRowType(),
             planNode->serdeRowType())),
         maxBroadcastBytes_(planNode->maxBroadcastBytes()) {
-    auto fileBroadcast = BroadcastFactory(planNode->basePath());
-    fileBroadcastWriter_ = fileBroadcast.createWriter(
-        8 << 20,
+    const auto& basePath = planNode->basePath();
+    VELOX_CHECK(!basePath.empty(), "Base path for broadcast files is empty!");
+    auto fileSystem = velox::filesystems::getFileSystem(basePath, nullptr);
+    fileSystem->mkdir(basePath);
+    fileBroadcastWriter_ = std::make_unique<BroadcastFileWriter>(
+        fmt::format("{}/file_broadcast_{}", basePath, makeUuid()),
         planNode->maxBroadcastBytes(),
-        operatorCtx_->pool(),
-        getVectorSerdeOptions(ctx->queryConfig(), VectorSerde::Kind::kPresto));
+        8 << 20,
+        getVectorSerdeOptions(
+            common::stringToCompressionKind(
+                ctx->queryConfig().shuffleCompressionKind()),
+            VectorSerde::Kind::kPresto),
+        operatorCtx_->pool());
   }
 
   bool needsInput() const override {

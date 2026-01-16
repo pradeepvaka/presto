@@ -60,6 +60,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.SystemSessionProperties.ENABLE_EMPTY_CONNECTOR_OPTIMIZER;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.and;
@@ -224,6 +225,107 @@ public class TestConnectorOptimization
     }
 
     @Test
+    public void testEmptyConnectorOptimization()
+    {
+        PlanNode plan = output(values("a", "b"), "a");
+        ConnectorId emptyConnectorId = new ConnectorId("$internal$ApplyConnectorOptimization_EMPTY_CONNECTOR");
+        ConnectorPlanOptimizer emptyConnectorOptimizer = createEmptyConnectorOptimizer(emptyConnectorId);
+        Session session = Session.builder(TEST_SESSION).setSystemProperty(ENABLE_EMPTY_CONNECTOR_OPTIMIZER, "true").build();
+
+        PlanNode actual = optimize(plan, ImmutableMap.of(
+                new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer)), session);
+
+        assertPlanMatch(
+                actual,
+                PlanMatchPattern.output(
+                        PlanMatchPattern.filter(
+                                "true",
+                                PlanMatchPattern.values("a", "b"))));
+
+        plan = output(
+                union(
+                        values("a", "b"),
+                        values("a", "b"),
+                        values("a", "b")),
+                "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+            new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer)), session);
+
+        assertPlanMatch(
+                actual,
+                PlanMatchPattern.output(
+                        PlanMatchPattern.filter(
+                                "true",
+                                PlanMatchPattern.union(
+                                        PlanMatchPattern.values("a", "b"),
+                                        PlanMatchPattern.values("a", "b"),
+                                        PlanMatchPattern.values("a", "b")))));
+
+        plan = output(
+                union(
+                        values("a", "b"),
+                        tableScan("cat1", "a", "b")),
+                "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+            new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer),
+                new ConnectorId("cat1"), ImmutableSet.of(noop())), session);
+
+        assertEquals(actual, plan);
+
+        plan = output(
+                filter(values("a", "b"), TRUE_CONSTANT),
+                "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+            new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer)), session);
+
+        assertPlanMatch(
+                actual,
+                PlanMatchPattern.output(
+                        PlanMatchPattern.filter(
+                                "true",
+                                PlanMatchPattern.filter(
+                                        "true",
+                                        PlanMatchPattern.values("a", "b")))));
+
+        plan = output(
+                union(
+                        filter(values("a", "b"), TRUE_CONSTANT),
+                        union(
+                                values("a", "b"),
+                                filter(values("a", "b"), TRUE_CONSTANT))),
+                "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+            new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer)), session);
+
+        assertPlanMatch(
+                actual,
+                PlanMatchPattern.output(
+                        PlanMatchPattern.filter(
+                                "true",
+                                PlanMatchPattern.union(
+                                        PlanMatchPattern.filter(
+                                                "true",
+                                                PlanMatchPattern.values("a", "b")),
+                                        PlanMatchPattern.union(
+                                                PlanMatchPattern.values("a", "b"),
+                                                PlanMatchPattern.filter(
+                                                        "true",
+                                                        PlanMatchPattern.values("a", "b")))))));
+
+        plan = output(tableScan("cat1", "a", "b"), "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+            new ConnectorId("tpch"), ImmutableSet.of(emptyConnectorOptimizer),
+                new ConnectorId("cat1"), ImmutableSet.of(noop())), session);
+
+        assertEquals(actual, plan);
+    }
+
+    @Test
     public void testMultipleConnectorOptimization()
     {
         PlanNode plan = output(
@@ -291,6 +393,28 @@ public class TestConnectorOptimization
                                         "true",
                                         SimpleTableScanMatcher.tableScan("cat2", "a", "b")),
                                 SimpleTableScanMatcher.tableScan("cat3", TRUE_CONSTANT))));
+
+        plan = output(
+                union(
+                        union(
+                                tableScan("cat1", "a", "b"),
+                                tableScan("cat2", "a", "b")),
+                        filter(tableScan("cat1", "a", "b"), TRUE_CONSTANT)),
+                "a");
+
+        actual = optimize(plan, ImmutableMap.of(
+                new ConnectorId("cat1"), ImmutableSet.of(multiConnectorOptimizer12, filterPushdown())));
+
+        assertPlanMatch(
+                actual,
+                PlanMatchPattern.output(
+                        PlanMatchPattern.union(
+                                PlanMatchPattern.union(
+                                        SimpleTableScanMatcher.tableScan("cat1", TRUE_CONSTANT),
+                                        PlanMatchPattern.filter(
+                                                "true",
+                                                SimpleTableScanMatcher.tableScan("cat2", "a", "b"))),
+                                SimpleTableScanMatcher.tableScan("cat1", TRUE_CONSTANT))));
 
         plan = output(
                 union(
@@ -505,6 +629,12 @@ public class TestConnectorOptimization
         return optimizer.optimize(plan, TEST_SESSION, TypeProvider.empty(), new VariableAllocator(), new PlanNodeIdAllocator(), WarningCollector.NOOP).getPlanNode();
     }
 
+    private static PlanNode optimize(PlanNode plan, Map<ConnectorId, Set<ConnectorPlanOptimizer>> optimizers, Session session)
+    {
+        ApplyConnectorOptimization optimizer = new ApplyConnectorOptimization(() -> optimizers);
+        return optimizer.optimize(plan, session, TypeProvider.empty(), new VariableAllocator(), new PlanNodeIdAllocator(), WarningCollector.NOOP).getPlanNode();
+    }
+
     private static ConnectorPlanOptimizer filterPushdown()
     {
         return (maxSubplan, session, variableAllocator, idAllocator) -> maxSubplan.accept(new TestFilterPushdownVisitor(), null);
@@ -552,6 +682,24 @@ public class TestConnectorOptimization
             public java.util.List<ConnectorId> getSupportedConnectorIds()
             {
                 return supportedConnectors;
+            }
+        };
+    }
+
+    private static ConnectorPlanOptimizer createEmptyConnectorOptimizer(ConnectorId emptyConnectorId)
+    {
+        return new ConnectorPlanOptimizer()
+        {
+            @Override
+            public PlanNode optimize(PlanNode maxSubplan, com.facebook.presto.spi.ConnectorSession session, VariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator)
+            {
+                return new FilterNode(Optional.empty(), idAllocator.getNextId(), maxSubplan, TRUE_CONSTANT);
+            }
+
+            @Override
+            public java.util.List<ConnectorId> getSupportedConnectorIds()
+            {
+                return ImmutableList.of(emptyConnectorId);
             }
         };
     }

@@ -25,6 +25,7 @@ import com.facebook.presto.spi.LocalProperty;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.UniqueProperty;
 import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.DataOrganizationSpecification;
 import com.facebook.presto.spi.plan.DeleteNode;
 import com.facebook.presto.spi.plan.DistinctLimitNode;
 import com.facebook.presto.spi.plan.EquiJoinClause;
@@ -59,17 +60,22 @@ import com.facebook.presto.sql.planner.RowExpressionInterpreter;
 import com.facebook.presto.sql.planner.optimizations.ActualProperties.Global;
 import com.facebook.presto.sql.planner.plan.ApplyNode;
 import com.facebook.presto.sql.planner.plan.AssignUniqueId;
+import com.facebook.presto.sql.planner.plan.CallDistributedProcedureNode;
 import com.facebook.presto.sql.planner.plan.EnforceSingleRowNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.ExplainAnalyzeNode;
 import com.facebook.presto.sql.planner.plan.GroupIdNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
+import com.facebook.presto.sql.planner.plan.MergeProcessorNode;
+import com.facebook.presto.sql.planner.plan.MergeWriterNode;
 import com.facebook.presto.sql.planner.plan.RemoteSourceNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SampleNode;
 import com.facebook.presto.sql.planner.plan.SequenceNode;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
+import com.facebook.presto.sql.planner.plan.TableFunctionNode;
+import com.facebook.presto.sql.planner.plan.TableFunctionProcessorNode;
 import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UpdateNode;
@@ -108,6 +114,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static java.lang.String.format;
 import static java.util.stream.Collectors.toMap;
 
 public class PropertyDerivations
@@ -285,6 +292,50 @@ public class PropertyDerivations
         }
 
         @Override
+        public ActualProperties visitTableFunction(TableFunctionNode node, List<ActualProperties> inputProperties)
+        {
+            throw new IllegalStateException(format("Unexpected node: TableFunctionNode (%s)", node.getName()));
+        }
+
+        @Override
+        public ActualProperties visitTableFunctionProcessor(TableFunctionProcessorNode node, List<ActualProperties> inputProperties)
+        {
+            ImmutableList.Builder<LocalProperty<VariableReferenceExpression>> localProperties = ImmutableList.builder();
+
+            if (node.getSource().isPresent()) {
+                ActualProperties properties = Iterables.getOnlyElement(inputProperties);
+
+                // Only the partitioning properties of the source are passed-through, because the pass-through mechanism preserves the partitioning values.
+                // Sorting properties might be broken because input rows can be shuffled or nulls can be inserted as the result of pass-through.
+                // Constant properties might be broken because nulls can be inserted as the result of pass-through.
+                if (!node.getPrePartitioned().isEmpty()) {
+                    GroupingProperty<VariableReferenceExpression> prePartitionedProperty = new GroupingProperty<>(node.getPrePartitioned());
+                    for (LocalProperty<VariableReferenceExpression> localProperty : properties.getLocalProperties()) {
+                        if (!prePartitionedProperty.isSimplifiedBy(localProperty)) {
+                            break;
+                        }
+                        localProperties.add(localProperty);
+                    }
+                }
+            }
+
+            List<VariableReferenceExpression> partitionBy = node.getSpecification()
+                    .map(DataOrganizationSpecification::getPartitionBy)
+                    .orElse(ImmutableList.of());
+            if (!partitionBy.isEmpty()) {
+                localProperties.add(new GroupingProperty<>(partitionBy));
+            }
+
+            // TODO add global single stream property when there's Specification present with no partitioning columns
+
+            return ActualProperties.builder()
+                    .local(localProperties.build())
+                    .build()
+                    // Crop properties to output columns.
+                    .translateVariable(variable -> node.getOutputVariables().contains(variable) ? Optional.of(variable) : Optional.empty());
+        }
+
+        @Override
         public ActualProperties visitGroupId(GroupIdNode node, List<ActualProperties> inputProperties)
         {
             Map<VariableReferenceExpression, VariableReferenceExpression> inputToOutputMappings = new HashMap<>();
@@ -422,6 +473,18 @@ public class PropertyDerivations
 
         @Override
         public ActualProperties visitUpdate(UpdateNode node, List<ActualProperties> inputProperties)
+        {
+            return Iterables.getOnlyElement(inputProperties).translateVariable(symbol -> Optional.empty());
+        }
+
+        @Override
+        public ActualProperties visitMergeWriter(MergeWriterNode node, List<ActualProperties> inputProperties)
+        {
+            return visitPartitionedWriter(inputProperties);
+        }
+
+        @Override
+        public ActualProperties visitMergeProcessor(MergeProcessorNode node, List<ActualProperties> inputProperties)
         {
             return Iterables.getOnlyElement(inputProperties).translateVariable(symbol -> Optional.empty());
         }
@@ -785,6 +848,26 @@ public class PropertyDerivations
 
         @Override
         public ActualProperties visitTableWriter(TableWriterNode node, List<ActualProperties> inputProperties)
+        {
+            return visitPartitionedWriter(inputProperties);
+        }
+
+        private ActualProperties visitPartitionedWriter(List<ActualProperties> inputProperties)
+        {
+            ActualProperties properties = Iterables.getOnlyElement(inputProperties);
+
+            if (properties.isCoordinatorOnly()) {
+                return ActualProperties.builder()
+                        .global(coordinatorSingleStreamPartition())
+                        .build();
+            }
+            return ActualProperties.builder()
+                    .global(properties.isSingleNode() ? singleStreamPartition() : arbitraryPartition())
+                    .build();
+        }
+
+        @Override
+        public ActualProperties visitCallDistributedProcedure(CallDistributedProcedureNode node, List<ActualProperties> inputProperties)
         {
             ActualProperties properties = Iterables.getOnlyElement(inputProperties);
 

@@ -65,19 +65,6 @@ alphabetical order.
   This property is required when running Presto C++ workers because of
   underlying differences in behavior from Java workers.
 
-``native-execution-type-rewrite-enabled``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-* **Type:** ``boolean``
-* **Default value:** ``false``
-
-  When set to ``true``:
-    - Custom type names are peeled in the coordinator. Only the actual base type is preserved.
-    - ``CAST(col AS EnumType<T>)`` is rewritten as ``CAST(col AS <T>)``.
-    - ``ENUM_KEY(EnumType<T>)`` is rewritten as ``ELEMENT_AT(MAP(<T>, VARCHAR))``.
-
-  This property can only be enabled with native execution.
-
 ``optimizer.optimize-hash-generation``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -116,7 +103,19 @@ alphabetical order.
 * **Type:** ``string``
 * **Default value:** ``presto.default``
 
-  Specifies the namespace prefix for native C++ functions.
+  Specifies the namespace prefix for native C++ functions. This prefix is used when
+  registering Velox functions in Prestissimo to ensure proper function resolution in
+  multi-catalog environments.
+
+  .. warning::
+
+     **Critical**: When registering Velox functions, you **must** follow the
+     ``catalog.schema.`` prefix pattern. Functions registered without this pattern
+     will cause worker node crashes.
+
+  The configured value (for example, ``presto.default``) is automatically appended with a
+  trailing dot (``.``) to form the complete prefix (``presto.default.``). This results
+  in fully qualified function names like ``presto.default.substr`` or ``presto.default.sum``. Internal functions (prefixed with ``$internal$``) do not follow this pattern and are exempt from the three-part naming requirement.
 
 Worker Properties
 -----------------
@@ -431,6 +430,22 @@ avoid exceeding memory limits for the query.
   only by aborting. This flag is only effective if
   ``shared-arbitrator.global-arbitration-enabled`` is ``true``.
 
+``text-writer-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``true``
+
+  Enables writing data in ``TEXTFILE`` format.
+
+``text-reader-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``true``
+
+  Enables reading data in ``TEXTFILE`` format.
+
 Cache Properties
 ----------------
 
@@ -517,6 +532,17 @@ The configuration properties of AsyncDataCache and SSD cache are described here.
   When enabled, a CRC-based checksum is calculated for each cache entry written to SSD.
   The checksum is stored in the next checkpoint file.
 
+``ssd-cache-max-entries``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+* **Type:** ``integer``
+* **Default value:** ``10000000``
+
+  Maximum number of entries allowed in the SSD cache. A value of 0 means no limit.
+  When the limit is reached, new entry writes will be skipped.
+
+  The default of 10 million entries keeps metadata memory usage around 500MB, as each
+  cache entry uses approximately 50-60 bytes for the key, value, and hash overhead.
+
 ``ssd-cache-read-verification-enabled``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 * **Type:** ``bool``
@@ -560,6 +586,17 @@ Exchange Properties
 * **Default value:** ``10``
 
   Maximum wait time for exchange request in seconds.
+
+HTTP Client Properties
+----------------------
+
+``http-client.http2-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Specifies whether HTTP/2 should be enabled for HTTP client.
 
 Memory Checker Properties
 -------------------------

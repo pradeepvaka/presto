@@ -41,13 +41,14 @@ import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.operator.OperatorInfo;
-import com.facebook.presto.operator.OperatorStats;
+import com.facebook.presto.operator.OperatorInfoUnion;
 import com.facebook.presto.operator.TableFinishInfo;
 import com.facebook.presto.operator.TaskStats;
 import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.server.BasicQueryStats;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.facebook.presto.spi.eventlistener.Column;
 import com.facebook.presto.spi.eventlistener.OperatorStatistics;
 import com.facebook.presto.spi.eventlistener.OutputColumnMetadata;
@@ -81,6 +82,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -278,6 +280,7 @@ public class QueryMonitor
                 ImmutableSet.of(),
                 Optional.empty(),
                 ImmutableMap.of(),
+                Optional.empty(),
                 Optional.empty()));
 
         logQueryTimeline(queryInfo);
@@ -321,7 +324,8 @@ public class QueryMonitor
                         queryInfo.getWindowFunctions(),
                         queryInfo.getPrestoSparkExecutionContext(),
                         getPlanHash(queryInfo.getPlanCanonicalInfo(), historyBasedPlanStatisticsTracker.getStatsEquivalentPlanRootNode(queryInfo.getQueryId())),
-                        Optional.of(queryInfo.getPlanIdNodeMap())));
+                        Optional.of(queryInfo.getPlanIdNodeMap()),
+                        Optional.ofNullable(queryInfo.getUpdateInfo()).map(UpdateInfo::getUpdateObject)));
 
         logQueryTimeline(queryInfo);
     }
@@ -364,7 +368,7 @@ public class QueryMonitor
                         .map(stageId -> String.valueOf(stageId.getId()))
                         .collect(toImmutableList()),
                 queryInfo.getSession().getTraceToken(),
-                Optional.ofNullable(queryInfo.getUpdateType()));
+                Optional.ofNullable(queryInfo.getUpdateInfo()).map(UpdateInfo::getUpdateType));
     }
 
     private List<OperatorStatistics> createOperatorStatistics(QueryInfo queryInfo)
@@ -593,15 +597,27 @@ public class QueryMonitor
                             .collect(Collectors.toList()),
                     input.getConnectorInfo(),
                     input.getStatistics(),
-                    input.getSerializedCommitOutput()));
+                    input.getCommitOutput()));
         }
 
         Optional<QueryOutputMetadata> output = Optional.empty();
         if (queryInfo.getOutput().isPresent()) {
+            // Check both info (JSON) and infoUnion (Thrift) fields for TableFinishInfo
             Optional<TableFinishInfo> tableFinishInfo = queryInfo.getQueryStats().getOperatorSummaries().stream()
-                    .map(OperatorStats::getInfo)
-                    .filter(TableFinishInfo.class::isInstance)
-                    .map(TableFinishInfo.class::cast)
+                    .map(operatorStats -> {
+                        // First try the info field (JSON serialization)
+                        OperatorInfo info = operatorStats.getInfo();
+                        if (info instanceof TableFinishInfo) {
+                            return (TableFinishInfo) info;
+                        }
+                        // Fall back to infoUnion field (Thrift serialization)
+                        OperatorInfoUnion infoUnion = operatorStats.getInfoUnion();
+                        if (infoUnion != null) {
+                            return infoUnion.getTableFinishInfo();
+                        }
+                        return null;
+                    })
+                    .filter(Objects::nonNull)
                     .findFirst();
 
             Optional<List<OutputColumnMetadata>> outputColumnsMetadata = queryInfo.getOutput().get().getColumns()
@@ -619,8 +635,8 @@ public class QueryMonitor
                             queryInfo.getOutput().get().getTable(),
                             tableFinishInfo.map(TableFinishInfo::getSerializedConnectorOutputMetadata),
                             tableFinishInfo.map(TableFinishInfo::isJsonLengthLimitExceeded),
-                            queryInfo.getOutput().get().getSerializedCommitOutput(),
-                            outputColumnsMetadata));
+                            outputColumnsMetadata,
+                            queryInfo.getOutput().get().getCommitOutput()));
         }
 
         return new QueryIOMetadata(inputs.build(), output);

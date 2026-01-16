@@ -30,8 +30,21 @@ void registerPrestoMetrics() {
   DEFINE_METRIC(kCounterNumHTTPRequest, facebook::velox::StatType::COUNT);
   DEFINE_METRIC(kCounterNumHTTPRequestError, facebook::velox::StatType::COUNT);
   DEFINE_METRIC(kCounterHTTPRequestLatencyMs, facebook::velox::StatType::AVG);
+  DEFINE_HISTOGRAM_METRIC(
+      kCounterHTTPRequestSizeBytes,
+      1 * 1024, // 1KB bucket size
+      0,
+      5 * 1024 * 1024, // 5MB max
+      50,
+      90,
+      99,
+      100);
   DEFINE_METRIC(
       kCounterHttpClientNumConnectionsCreated, facebook::velox::StatType::SUM);
+  DEFINE_METRIC(
+      kCounterHttpClientConnectionFirstUse, facebook::velox::StatType::SUM);
+  DEFINE_METRIC(
+      kCounterHttpClientConnectionReuse, facebook::velox::StatType::SUM);
   // Tracks http client transaction create delay in range of [0, 30s] with
   // 30 buckets and reports P50, P90, P99, and P100.
   DEFINE_HISTOGRAM_METRIC(
@@ -93,6 +106,7 @@ void registerPrestoMetrics() {
   DEFINE_METRIC(kCounterOverloaded, facebook::velox::StatType::AVG);
   DEFINE_METRIC(kCounterNumStuckDrivers, facebook::velox::StatType::AVG);
   DEFINE_METRIC(kCounterTaskPlannedTimeMs, facebook::velox::StatType::AVG);
+  DEFINE_METRIC(kCounterOverloadedDurationSec, facebook::velox::StatType::AVG);
   DEFINE_METRIC(
       kCounterTotalPartitionedOutputBuffer, facebook::velox::StatType::AVG);
   DEFINE_METRIC(

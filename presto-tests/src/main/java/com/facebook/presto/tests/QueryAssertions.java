@@ -63,10 +63,10 @@ public final class QueryAssertions
     public static Session assertStartTransaction(QueryRunner queryRunner, Session session, @Language("SQL") String sql)
     {
         MaterializedResult results = queryRunner.execute(session, sql);
-        if (!results.getUpdateType().isPresent()) {
+        if (!results.getUpdateInfo().isPresent()) {
             fail("update type is not set");
         }
-        if (!results.getUpdateType().get().equals("START TRANSACTION")) {
+        if (!results.getUpdateInfo().get().getUpdateType().equals("START TRANSACTION")) {
             fail("not a start transaction statement");
         }
         assertTrue(results.getStartedTransactionId().isPresent());
@@ -79,10 +79,10 @@ public final class QueryAssertions
     public static Session assertEndTransaction(QueryRunner queryRunner, Session session, @Language("SQL") String sql)
     {
         MaterializedResult results = queryRunner.execute(session, sql);
-        if (!results.getUpdateType().isPresent()) {
+        if (!results.getUpdateInfo().isPresent()) {
             fail("update type is not set");
         }
-        if (!results.getUpdateType().get().equals("ROLLBACK") && !results.getUpdateType().get().equals("COMMIT")) {
+        if (!results.getUpdateInfo().get().getUpdateType().equals("ROLLBACK") && !results.getUpdateInfo().get().getUpdateType().equals("COMMIT")) {
             fail("not a end transaction statement");
         }
         assertTrue(results.isClearTransactionId());
@@ -114,7 +114,7 @@ public final class QueryAssertions
             planAssertion.get().accept(queryPlan);
         }
 
-        if (!results.getUpdateType().isPresent()) {
+        if (!results.getUpdateInfo().isPresent()) {
             fail("update type is not set");
         }
 
@@ -231,8 +231,8 @@ public final class QueryAssertions
             log.info("FINISHED in presto: %s, expected: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
         }
 
-        if (actualResults.getUpdateType().isPresent() || actualResults.getUpdateCount().isPresent()) {
-            if (!actualResults.getUpdateType().isPresent()) {
+        if (actualResults.getUpdateInfo().isPresent() || actualResults.getUpdateCount().isPresent()) {
+            if (!actualResults.getUpdateInfo().isPresent()) {
                 fail("update count present without update type for query: \n" + actual);
             }
             if (!compareUpdate) {
@@ -244,7 +244,7 @@ public final class QueryAssertions
         List<MaterializedRow> expectedRows = expectedResults.getMaterializedRows();
 
         if (compareUpdate) {
-            if (!actualResults.getUpdateType().isPresent()) {
+            if (!actualResults.getUpdateInfo().isPresent()) {
                 fail("update type not present for query: \n" + actual);
             }
             if (!actualResults.getUpdateCount().isPresent()) {
@@ -381,18 +381,18 @@ public final class QueryAssertions
             fail(format("Expected query to fail: %s", sql));
         }
         catch (RuntimeException ex) {
-            assertExceptionMessage(sql, ex, expectedMessageRegExp, false);
+            assertExceptionMessage(sql, ex, expectedMessageRegExp, false, false);
         }
     }
 
-    protected static void assertQueryFails(QueryRunner queryRunner, Session session, @Language("SQL") String sql, @Language("RegExp") String expectedMessageRegExp, boolean usePatternMatcher)
+    protected static void assertQueryFails(QueryRunner queryRunner, Session session, @Language("SQL") String sql, @Language("RegExp") String expectedMessageRegExp, boolean usePatternMatcher, boolean exact)
     {
         try {
             queryRunner.execute(session, sql);
             fail(format("Expected query to fail: %s", sql));
         }
         catch (RuntimeException ex) {
-            assertExceptionMessage(sql, ex, expectedMessageRegExp, usePatternMatcher);
+            assertExceptionMessage(sql, ex, expectedMessageRegExp, usePatternMatcher, exact);
         }
     }
 
@@ -408,7 +408,7 @@ public final class QueryAssertions
         }
     }
 
-    public static void assertExceptionMessage(String sql, Exception exception, @Language("RegExp") String regex, boolean usePatternMatcher)
+    public static void assertExceptionMessage(String sql, Exception exception, @Language("RegExp") String regex, boolean usePatternMatcher, boolean exact)
     {
         if (usePatternMatcher) {
             Pattern p = Pattern.compile(regex, Pattern.MULTILINE);
@@ -417,7 +417,7 @@ public final class QueryAssertions
             }
         }
         else {
-            if (!nullToEmpty(exception.getMessage()).matches(regex)) {
+            if (!(exact ? nullToEmpty(exception.getMessage()).equals(regex) : nullToEmpty(exception.getMessage()).matches(regex))) {
                 fail(format("Expected exception message '%s' to match '%s' for query: %s", exception.getMessage(), regex, sql), exception);
             }
         }

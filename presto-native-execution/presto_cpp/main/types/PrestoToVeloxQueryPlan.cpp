@@ -15,6 +15,7 @@
 // clang-format off
 #include "presto_cpp/main/common/Configs.h"
 #include "presto_cpp/main/connectors/PrestoToVeloxConnector.h"
+#include "presto_cpp/main/types/PrestoTaskId.h"
 #include "presto_cpp/main/types/PrestoToVeloxQueryPlan.h"
 #include <velox/type/TypeUtil.h>
 #include <velox/type/Filter.h>
@@ -35,6 +36,7 @@
 #include "presto_cpp/main/operators/ShuffleRead.h"
 #include "presto_cpp/main/operators/ShuffleWrite.h"
 #include "presto_cpp/main/types/TypeParser.h"
+#include "velox/exec/TraceUtil.h"
 
 using namespace facebook::velox;
 using namespace facebook::velox::exec;
@@ -42,6 +44,26 @@ using namespace facebook::velox::exec;
 namespace facebook::presto {
 
 namespace {
+
+// Check if this is a broadcast join with cached hash table enabled.
+// Works with both JoinNode and SemiJoinNode.
+bool useCachedHashTable(const protocol::PlanNode& node) {
+  if (!SystemConfig::instance()->broadcastJoinTableCachingEnabled()) {
+    return false;
+  }
+  if (const auto* joinNode = dynamic_cast<const protocol::JoinNode*>(&node)) {
+    return joinNode->distributionType &&
+        *joinNode->distributionType ==
+        protocol::JoinDistributionType::REPLICATED;
+  } else if (
+      const auto* semiJoinNode =
+          dynamic_cast<const protocol::SemiJoinNode*>(&node)) {
+    return semiJoinNode->distributionType &&
+        *semiJoinNode->distributionType ==
+        protocol::DistributionType::REPLICATED;
+  }
+  return false;
+}
 
 std::vector<std::string> getNames(const protocol::Assignments& assignments) {
   std::vector<std::string> names;
@@ -84,12 +106,10 @@ std::shared_ptr<connector::ColumnHandle> toColumnHandle(
 std::shared_ptr<connector::ConnectorTableHandle> toConnectorTableHandle(
     const protocol::TableHandle& tableHandle,
     const VeloxExprConverter& exprConverter,
-    const TypeParser& typeParser,
-    connector::ColumnHandleMap& assignments) {
+    const TypeParser& typeParser) {
   const auto& connector =
       getPrestoToVeloxConnector(tableHandle.connectorHandle->_type);
-  return connector.toVeloxTableHandle(
-      tableHandle, exprConverter, typeParser, assignments);
+  return connector.toVeloxTableHandle(tableHandle, exprConverter, typeParser);
 }
 
 std::vector<core::TypedExprPtr> getProjections(
@@ -669,20 +689,20 @@ core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
     projections.emplace_back(
         std::make_shared<core::ConstantTypedExpr>(BOOLEAN(), constantValue));
 
+    auto hashJoinNode = std::make_shared<core::HashJoinNode>(
+        semiJoin->id,
+        joinType.value(),
+        joinType == core::JoinType::kAnti ? true : false,
+        leftKeys,
+        rightKeys,
+        nullptr,
+        left,
+        right,
+        left->outputType(),
+        useCachedHashTable(*semiJoin));
+
     return std::make_shared<core::ProjectNode>(
-        node->id,
-        std::move(names),
-        std::move(projections),
-        std::make_shared<core::HashJoinNode>(
-            semiJoin->id,
-            joinType.value(),
-            joinType == core::JoinType::kAnti ? true : false,
-            leftKeys,
-            rightKeys,
-            nullptr, // filter
-            left,
-            right,
-            left->outputType()));
+        node->id, std::move(names), std::move(projections), hashJoinNode);
   }
 
   return std::make_shared<core::FilterNode>(
@@ -1006,8 +1026,8 @@ VeloxQueryPlanConverterBase::toVeloxQueryPlan(
     assignments.emplace(
         variable.name, toColumnHandle(columnHandle.get(), typeParser_));
   }
-  auto connectorTableHandle = toConnectorTableHandle(
-      node->table, exprConverter_, typeParser_, assignments);
+  auto connectorTableHandle =
+      toConnectorTableHandle(node->table, exprConverter_, typeParser_);
   return std::make_shared<core::TableScanNode>(
       node->id, rowType, connectorTableHandle, assignments);
 }
@@ -1239,7 +1259,8 @@ core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
       node->filter ? exprConverter_.toVeloxExpr(*node->filter) : nullptr,
       toVeloxQueryPlan(node->left, tableWriteInfo, taskId),
       toVeloxQueryPlan(node->right, tableWriteInfo, taskId),
-      toRowType(node->outputVariables, typeParser_));
+      toRowType(node->outputVariables, typeParser_),
+      useCachedHashTable(*node));
 }
 
 core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
@@ -1270,7 +1291,8 @@ core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
       /*filter=*/nullptr,
       left,
       right,
-      ROW(std::move(outputNames), std::move(outputTypes)));
+      ROW(std::move(outputNames), std::move(outputTypes)),
+      useCachedHashTable(*node));
 }
 
 core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
@@ -1375,8 +1397,8 @@ VeloxQueryPlanConverterBase::toVeloxQueryPlan(
     assignments.emplace(
         variable.name, toColumnHandle(columnHandle.get(), typeParser_));
   }
-  auto connectorTableHandle = toConnectorTableHandle(
-      node->tableHandle, exprConverter_, typeParser_, assignments);
+  auto connectorTableHandle =
+      toConnectorTableHandle(node->tableHandle, exprConverter_, typeParser_);
   return std::make_shared<core::TableScanNode>(
       node->id, rowType, connectorTableHandle, assignments);
 }
@@ -2297,6 +2319,26 @@ core::PlanFragment VeloxBatchQueryPlanConverter::toVeloxQueryPlan(
     return planFragment;
   }
 
+  // Convert outputOrderingScheme to sortingKeys and sortingOrders
+  std::optional<std::vector<velox::core::SortOrder>> sortingOrders;
+  std::optional<std::vector<velox::core::FieldAccessTypedExprPtr>> sortingKeys;
+
+  if (fragment.outputOrderingScheme) {
+    std::vector<velox::core::SortOrder> orders;
+    std::vector<velox::core::FieldAccessTypedExprPtr> keys;
+
+    orders.reserve(fragment.outputOrderingScheme->orderBy.size());
+    keys.reserve(fragment.outputOrderingScheme->orderBy.size());
+
+    for (const auto& ordering : fragment.outputOrderingScheme->orderBy) {
+      keys.emplace_back(exprConverter_.toVeloxExpr(ordering.variable));
+      orders.emplace_back(toVeloxSortOrder(ordering.sortOrder));
+    }
+
+    sortingKeys = std::move(keys);
+    sortingOrders = std::move(orders);
+  }
+
   const auto partitionAndSerializeNode =
       std::make_shared<operators::PartitionAndSerializeNode>(
           fmt::format("{}.ps", partitionedOutputNode->id()),
@@ -2305,7 +2347,9 @@ core::PlanFragment VeloxBatchQueryPlanConverter::toVeloxQueryPlan(
           partitionedOutputNode->outputType(),
           partitionedOutputNode->sources()[0],
           partitionedOutputNode->isReplicateNullsAndAny(),
-          partitionedOutputNode->partitionFunctionSpecPtr());
+          partitionedOutputNode->partitionFunctionSpecPtr(),
+          sortingOrders,
+          sortingKeys);
 
   planFragment.planNode = std::make_shared<operators::ShuffleWriteNode>(
       fmt::format("{}.sw", partitionedOutputNode->id()),

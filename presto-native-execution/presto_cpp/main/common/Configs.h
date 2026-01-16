@@ -209,6 +209,39 @@ class SystemConfig : public ConfigBase {
       "http-server.https.enabled"};
   static constexpr std::string_view kHttpServerHttp2Enabled{
       "http-server.http2.enabled"};
+  /// HTTP/2 server idle timeout in milliseconds (default 60000ms).
+  static constexpr std::string_view kHttpServerIdleTimeoutMs{
+      "http-server.http2.idle-timeout-ms"};
+  /// HTTP/2 initial receive window size in bytes (default 1MB).
+  static constexpr std::string_view kHttpServerHttp2InitialReceiveWindow{
+      "http-server.http2.initial-receive-window"};
+  /// HTTP/2 receive stream window size in bytes (default 1MB).
+  static constexpr std::string_view kHttpServerHttp2ReceiveStreamWindowSize{
+      "http-server.http2.receive-stream-window-size"};
+  /// HTTP/2 receive session window size in bytes (default 10MB).
+  static constexpr std::string_view kHttpServerHttp2ReceiveSessionWindowSize{
+      "http-server.http2.receive-session-window-size"};
+  /// HTTP/2 maximum concurrent streams per connection (default 100).
+  static constexpr std::string_view kHttpServerHttp2MaxConcurrentStreams{
+      "http-server.http2.max-concurrent-streams"};
+  /// HTTP/2 content compression level (1-9, default 4 for speed).
+  static constexpr std::string_view kHttpServerContentCompressionLevel{
+      "http-server.http2.content-compression-level"};
+  /// HTTP/2 content compression minimum size in bytes (default 3584).
+  static constexpr std::string_view kHttpServerContentCompressionMinimumSize{
+      "http-server.http2.content-compression-minimum-size"};
+  /// Enable content compression (master switch, default true).
+  static constexpr std::string_view kHttpServerEnableContentCompression{
+      "http-server.http2.enable-content-compression"};
+  /// Enable zstd compression (default false).
+  static constexpr std::string_view kHttpServerEnableZstdCompression{
+      "http-server.http2.enable-zstd-compression"};
+  /// Zstd compression level (-5 to 22, default 8).
+  static constexpr std::string_view kHttpServerZstdContentCompressionLevel{
+      "http-server.http2.zstd-content-compression-level"};
+  /// Enable gzip compression (default true).
+  static constexpr std::string_view kHttpServerEnableGzipCompression{
+      "http-server.http2.enable-gzip-compression"};
   /// List of comma separated ciphers the client can use.
   ///
   /// NOTE: the client needs to have at least one cipher shared with server
@@ -339,6 +372,11 @@ class SystemConfig : public ConfigBase {
   /// This is to prevent spiky fluctuation of the overloaded status.
   static constexpr std::string_view kWorkerOverloadedCooldownPeriodSec{
       "worker-overloaded-cooldown-period-sec"};
+  /// The number of seconds the worker needs to be continuously overloaded for
+  /// us to detach the worker from the cluster in an attempt to keep the
+  /// cluster operational. Ignored if set to zero. Default is zero.
+  static constexpr std::string_view kWorkerOverloadedSecondsToDetachWorker{
+      "worker-overloaded-seconds-to-detach-worker"};
   /// If true, the worker starts queuing new tasks when overloaded, and
   /// starts them gradually when it stops being overloaded.
   static constexpr std::string_view kWorkerOverloadedTaskQueuingEnabled{
@@ -409,6 +447,12 @@ class SystemConfig : public ConfigBase {
   /// value when cache data is loaded from the SSD.
   static constexpr std::string_view kSsdCacheReadVerificationEnabled{
       "ssd-cache-read-verification-enabled"};
+  /// Maximum number of entries allowed in the SSD cache. A value of 0 means no
+  /// limit. When the limit is reached, new entry writes will be skipped.
+  /// Default is 10 million entries, which keeps metadata memory usage around
+  /// 500MB (each entry uses ~50-60 bytes for key, value, and hash overhead).
+  static constexpr std::string_view kSsdCacheMaxEntries{
+      "ssd-cache-max-entries"};
   static constexpr std::string_view kEnableSerializedPageChecksum{
       "enable-serialized-page-checksum"};
 
@@ -639,6 +683,31 @@ class SystemConfig : public ConfigBase {
   static constexpr std::string_view kHeartbeatFrequencyMs{
       "heartbeat-frequency-ms"};
 
+  /// Whether HTTP/2 is enabled for HTTP client connections.
+  static constexpr std::string_view kHttpClientHttp2Enabled{
+      "http-client.http2-enabled"};
+
+  /// Maximum concurrent streams per HTTP/2 connection
+  static constexpr std::string_view kHttpClientHttp2MaxStreamsPerConnection{
+      "http-client.http2.max-streams-per-connection"};
+
+  /// HTTP/2 initial stream window size in bytes.
+  static constexpr std::string_view kHttpClientHttp2InitialStreamWindow{
+      "http-client.http2.initial-stream-window"};
+
+  /// HTTP/2 stream window size in bytes.
+  static constexpr std::string_view kHttpClientHttp2StreamWindow{
+      "http-client.http2.stream-window"};
+
+  /// HTTP/2 session window size in bytes.
+  static constexpr std::string_view kHttpClientHttp2SessionWindow{
+      "http-client.http2.session-window"};
+
+  /// Whether to enable HTTP client connection reuse counter reporting.
+  /// When enabled, tracks connection first use and reuse metrics.
+  static constexpr std::string_view kHttpClientConnectionReuseCounterEnabled{
+      "http-client.connection-reuse-counter-enabled"};
+
   static constexpr std::string_view kExchangeMaxErrorDuration{
       "exchange.max-error-duration"};
 
@@ -652,7 +721,7 @@ class SystemConfig : public ConfigBase {
   /// as soon as exchange gets its response back. Otherwise the memory transfer
   /// will happen later in driver thread pool.
   ///
-  /// NOTE: this only applies if 'exchange.no-buffer-copy' is false.
+  /// NOTE: this only applies if 'exchange.enable-buffer-copy' is true.
   static constexpr std::string_view kExchangeImmediateBufferTransfer{
       "exchange.immediate-buffer-transfer"};
 
@@ -683,6 +752,11 @@ class SystemConfig : public ConfigBase {
       kExchangeHttpClientNumCpuThreadsHwMultiplier{
           "exchange.http-client.num-cpu-threads-hw-multiplier"};
 
+  /// Maximum size in bytes to accumulate in ExchangeQueue. Enforced
+  /// approximately, not strictly.
+  static constexpr std::string_view kExchangeMaxBufferSize{
+      "exchange.max-buffer-size"};
+
   /// The maximum timeslice for a task on thread if there are threads queued.
   static constexpr std::string_view kTaskRunTimeSliceMicros{
       "task-run-timeslice-micros"};
@@ -704,6 +778,10 @@ class SystemConfig : public ConfigBase {
   /// UDS (unix domain socket) path used by the remote function thrift server.
   static constexpr std::string_view kRemoteFunctionServerThriftUdsPath{
       "remote-function-server.thrift.uds-path"};
+
+  /// HTTP URL used by the remote function rest server.
+  static constexpr std::string_view kRemoteFunctionServerRestURL{
+      "remote-function-server.rest.url"};
 
   /// Path where json files containing signatures for remote functions can be
   /// found.
@@ -758,6 +836,17 @@ class SystemConfig : public ConfigBase {
       "order-by-spill-enabled"};
   static constexpr std::string_view kMaxSpillBytes{"max-spill-bytes"};
 
+  /// When enabled, hash tables built for broadcast joins are cached and reused
+  /// across tasks within the same query and stage.
+  static constexpr std::string_view kBroadcastJoinTableCachingEnabled{
+      "broadcast-join-table-caching-enabled"};
+
+  /// If true, data fetching is deferred until next() is called on the exchange
+  /// client. If false (default), exchange clients will start fetching data
+  /// immediately when remote tasks are added.
+  static constexpr std::string_view kExchangeLazyFetchingEnabled{
+      "exchange-lazy-fetching-enabled"};
+
   // Max wait time for exchange request in seconds.
   static constexpr std::string_view kRequestDataSizesMaxWaitSec{
       "exchange.http-client.request-data-sizes-max-wait-sec"};
@@ -767,12 +856,25 @@ class SystemConfig : public ConfigBase {
   static constexpr std::string_view kHttpSrvIoEvbViolationThresholdMs{
       "http-server.io-evb-violation-threshold-ms"};
 
+  static constexpr std::string_view kMaxLocalExchangeBufferSize{
+      "local-exchange.max-buffer-size"};
+
   static constexpr std::string_view kMaxLocalExchangePartitionBufferSize{
       "local-exchange.max-partition-buffer-size"};
+
+  static constexpr std::string_view kParallelOutputJoinBuildRowsEnabled{
+      "join.parallel-output-build-rows-enabled"};
+
+  static constexpr std::string_view kHashProbeBloomFilterPushdownMaxSize{
+      "join.hash-probe-bloom-filter-pushdown-max-size"};
 
   // Add to temporarily help with gradual rollout for text writer
   // TODO: remove once text writer is fully rolled out
   static constexpr std::string_view kTextWriterEnabled{"text-writer-enabled"};
+
+  // Add to temporarily help with gradual rollout for text reader
+  // TODO: remove once text reader is fully rolled out
+  static constexpr std::string_view kTextReaderEnabled{"text-reader-enabled"};
 
   /// Enable the type char(n) with the same behavior as unbounded varchar.
   /// char(n) type is not supported by parser when set to false.
@@ -783,6 +885,10 @@ class SystemConfig : public ConfigBase {
   /// When set to false, BigintEnum or VarcharEnum types will throw an
   ///  unsupported error during type parsing.
   static constexpr std::string_view kEnumTypesEnabled{"enum-types-enabled"};
+
+  /// Enable velox plan consistency check.
+  static constexpr std::string_view kPlanConsistencyCheckEnabled{
+      "plan-consistency-check-enabled"};
 
   SystemConfig();
 
@@ -801,6 +907,28 @@ class SystemConfig : public ConfigBase {
   int httpServerHttpsPort() const;
 
   bool httpServerHttp2Enabled() const;
+
+  uint32_t httpServerIdleTimeoutMs() const;
+
+  uint32_t httpServerHttp2InitialReceiveWindow() const;
+
+  uint32_t httpServerHttp2ReceiveStreamWindowSize() const;
+
+  uint32_t httpServerHttp2ReceiveSessionWindowSize() const;
+
+  uint32_t httpServerHttp2MaxConcurrentStreams() const;
+
+  uint32_t httpServerContentCompressionLevel() const;
+
+  uint32_t httpServerContentCompressionMinimumSize() const;
+
+  bool httpServerEnableContentCompression() const;
+
+  bool httpServerEnableZstdCompression() const;
+
+  uint32_t httpServerZstdContentCompressionLevel() const;
+
+  bool httpServerEnableGzipCompression() const;
 
   /// A list of ciphers (comma separated) that are supported by
   /// server and client. Note Java and folly::SSLContext use different names to
@@ -843,6 +971,8 @@ class SystemConfig : public ConfigBase {
   std::string remoteFunctionServerCatalogName() const;
 
   std::string remoteFunctionServerSerde() const;
+
+  std::string remoteFunctionServerRestURL() const;
 
   int32_t maxDriversPerTask() const;
 
@@ -906,6 +1036,8 @@ class SystemConfig : public ConfigBase {
 
   uint32_t workerOverloadedCooldownPeriodSec() const;
 
+  uint64_t workerOverloadedSecondsToDetachWorker() const;
+
   bool workerOverloadedTaskQueuingEnabled() const;
 
   bool mallocMemHeapDumpEnabled() const;
@@ -941,6 +1073,8 @@ class SystemConfig : public ConfigBase {
   bool ssdCacheChecksumEnabled() const;
 
   bool ssdCacheReadVerificationEnabled() const;
+
+  uint64_t ssdCacheMaxEntries() const;
 
   std::string shuffleName() const;
 
@@ -1014,6 +1148,18 @@ class SystemConfig : public ConfigBase {
 
   uint64_t heartbeatFrequencyMs() const;
 
+  bool httpClientHttp2Enabled() const;
+
+  uint32_t httpClientHttp2MaxStreamsPerConnection() const;
+
+  uint32_t httpClientHttp2InitialStreamWindow() const;
+
+  uint32_t httpClientHttp2StreamWindow() const;
+
+  uint32_t httpClientHttp2SessionWindow() const;
+
+  bool httpClientConnectionReuseCounterEnabled() const;
+
   std::chrono::duration<double> exchangeMaxErrorDuration() const;
 
   std::chrono::duration<double> exchangeRequestTimeoutMs() const;
@@ -1025,6 +1171,8 @@ class SystemConfig : public ConfigBase {
   bool exchangeEnableBufferCopy() const;
 
   bool exchangeImmediateBufferTransfer() const;
+
+  uint64_t exchangeMaxBufferSize() const;
 
   int32_t taskRunTimeSliceMicros() const;
 
@@ -1066,6 +1214,10 @@ class SystemConfig : public ConfigBase {
 
   bool orderBySpillEnabled() const;
 
+  bool broadcastJoinTableCachingEnabled() const;
+
+  bool exchangeLazyFetchingEnabled() const;
+
   uint64_t maxSpillBytes() const;
 
   int requestDataSizesMaxWaitSec() const;
@@ -1076,13 +1228,23 @@ class SystemConfig : public ConfigBase {
 
   int32_t httpSrvIoEvbViolationThresholdMs() const;
 
+  uint64_t maxLocalExchangeBufferSize() const;
+
   uint64_t maxLocalExchangePartitionBufferSize() const;
 
+  bool parallelOutputJoinBuildRowsEnabled() const;
+
+  uint64_t hashProbeBloomFilterPushdownMaxSize() const;
+
   bool textWriterEnabled() const;
+
+  bool textReaderEnabled() const;
 
   bool charNToVarcharImplicitCast() const;
 
   bool enumTypesEnabled() const;
+
+  bool planConsistencyCheckEnabled() const;
 };
 
 /// Provides access to node properties defined in node.properties file.

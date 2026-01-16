@@ -23,7 +23,7 @@ namespace facebook::presto::operators {
 #define CALL_SHUFFLE(call, methodName)                                \
   try {                                                               \
     call;                                                             \
-  } catch (const velox::VeloxException& e) {                          \
+  } catch (const velox::VeloxException&) {                            \
     throw;                                                            \
   } catch (const std::exception& e) {                                 \
     VELOX_FAIL("ShuffleReader::{} failed: {}", methodName, e.what()); \
@@ -31,35 +31,33 @@ namespace facebook::presto::operators {
 
 folly::SemiFuture<ShuffleExchangeSource::Response>
 ShuffleExchangeSource::request(
-    uint32_t /*maxBytes*/,
+    uint32_t maxBytes,
     std::chrono::microseconds /*maxWait*/) {
-  auto nextBatch = [this]() {
-    return std::move(shuffleReader_->next(1))
-        .deferValue([this](std::vector<std::unique_ptr<ReadBatch>>&& batches) {
-          std::vector<velox::ContinuePromise> promises;
-          int64_t totalBytes{0};
-          {
-            std::lock_guard<std::mutex> l(queue_->mutex());
-            if (batches.empty()) {
-              atEnd_ = true;
-              queue_->enqueueLocked(nullptr, promises);
-            } else {
-              for (auto& batch : batches) {
-                totalBytes = batch->data->size();
-                VELOX_CHECK_LE(totalBytes, std::numeric_limits<int32_t>::max());
-                ++numBatches_;
-                queue_->enqueueLocked(
-                    std::make_unique<ShuffleRowBatch>(std::move(batch)),
-                    promises);
+  auto nextBatch = [this, maxBytes]() {
+    return std::move(shuffleReader_->next(maxBytes))
+        .deferValue(
+            [this](
+                std::vector<std::unique_ptr<ShuffleSerializedPage>>&& batches) {
+              std::vector<velox::ContinuePromise> promises;
+              int64_t totalBytes{0};
+              {
+                std::lock_guard<std::mutex> l(queue_->mutex());
+                if (batches.empty()) {
+                  atEnd_ = true;
+                  queue_->enqueueLocked(nullptr, promises);
+                } else {
+                  for (auto& batch : batches) {
+                    ++numBatches_;
+                    queue_->enqueueLocked(std::move(batch), promises);
+                  }
+                }
               }
-            }
-          }
 
-          for (auto& promise : promises) {
-            promise.setValue();
-          }
-          return folly::makeFuture(Response{totalBytes, atEnd_});
-        })
+              for (auto& promise : promises) {
+                promise.setValue();
+              }
+              return folly::makeFuture(Response{totalBytes, atEnd_});
+            })
         .deferError(
             [](folly::exception_wrapper e) mutable
                 -> ShuffleExchangeSource::Response {
@@ -80,6 +78,15 @@ ShuffleExchangeSource::requestDataSizes(std::chrono::microseconds /*maxWait*/) {
     remainingBytes.push_back(1 << 20);
   }
   return folly::makeSemiFuture(Response{0, atEnd_, std::move(remainingBytes)});
+}
+
+bool ShuffleExchangeSource::supportsMetrics() const {
+  return shuffleReader_->supportsMetrics();
+}
+
+folly::F14FastMap<std::string, velox::RuntimeMetric>
+ShuffleExchangeSource::metrics() const {
+  return shuffleReader_->metrics();
 }
 
 folly::F14FastMap<std::string, int64_t> ShuffleExchangeSource::stats() const {

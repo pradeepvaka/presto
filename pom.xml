@@ -5,12 +5,12 @@
     <parent>
         <groupId>com.facebook.airlift</groupId>
         <artifactId>airbase</artifactId>
-        <version>107</version>
+        <version>108</version>
     </parent>
 
     <groupId>com.facebook.presto</groupId>
     <artifactId>presto-root</artifactId>
-    <version>0.296-SNAPSHOT</version>
+    <version>0.297-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>presto-root</name>
@@ -44,7 +44,7 @@
         <air.maven.version>3.3.9</air.maven.version>
 
         <dep.antlr.version>4.13.2</dep.antlr.version>
-        <dep.airlift.version>0.221</dep.airlift.version>
+        <dep.airlift.version>0.225</dep.airlift.version>
         <dep.packaging.version>${dep.airlift.version}</dep.packaging.version>
         <dep.slice.version>0.38</dep.slice.version>
         <dep.testing-mysql-server-5.version>0.6</dep.testing-mysql-server-5.version>
@@ -58,7 +58,7 @@
         <dep.joda.version>2.13.1</dep.joda.version>
         <dep.tempto.version>1.55</dep.tempto.version>
         <dep.testng.version>7.5</dep.testng.version>
-        <dep.lucene.version>8.11.3</dep.lucene.version>
+        <dep.lucene.version>9.12.0</dep.lucene.version>
         <dep.assertj-core.version>3.8.0</dep.assertj-core.version>
         <dep.parquet.version>1.13.1</dep.parquet.version>
         <dep.asm.version>9.7.1</dep.asm.version>
@@ -66,7 +66,7 @@
         <dep.alluxio.version>313</dep.alluxio.version>
         <dep.slf4j.version>2.0.16</dep.slf4j.version>
         <dep.kafka.version>3.9.1</dep.kafka.version>
-        <dep.pinot.version>0.11.0</dep.pinot.version>
+        <dep.pinot.version>1.3.0</dep.pinot.version>
         <dep.druid.version>30.0.1</dep.druid.version>
         <dep.jaxb.version>2.3.1</dep.jaxb.version>
         <dep.jaxb.runtime.version>4.0.5</dep.jaxb.runtime.version>
@@ -80,10 +80,10 @@
         <dep.jackson.version>2.15.4</dep.jackson.version>
         <dep.j2objc.version>3.0.0</dep.j2objc.version>
         <dep.avro.version>1.11.4</dep.avro.version>
-        <dep.commons.compress.version>1.26.2</dep.commons.compress.version>
+        <dep.commons.compress.version>1.27.1</dep.commons.compress.version>
         <dep.protobuf-java.version>4.29.0</dep.protobuf-java.version>
-        <dep.jetty.version>12.0.18</dep.jetty.version>
-        <dep.netty.version>4.1.128.Final</dep.netty.version>
+        <dep.jetty.version>12.0.29</dep.jetty.version>
+        <dep.netty.version>4.1.130.Final</dep.netty.version>
         <dep.reactor-netty.version>1.2.8</dep.reactor-netty.version>
         <dep.snakeyaml.version>2.5</dep.snakeyaml.version>
         <dep.gson.version>2.12.1</dep.gson.version>
@@ -93,6 +93,7 @@
         <dep.mariadb.version>3.5.4</dep.mariadb.version>
         <dep.spark.version>2.0.2-6</dep.spark.version>
         <dep.hadoop.version>3.4.1-1</dep.hadoop.version>
+        <scala.version>2.13.17</scala.version>
 
         <!--
           America/Bahia_Banderas has:
@@ -107,8 +108,14 @@
         <air.test.jvmsize>4g</air.test.jvmsize>
         <grpc.version>1.75.0</grpc.version>
         <air.javadoc.lint>-missing</air.javadoc.lint>
-        <dep.commons.codec.version>1.17.1</dep.commons.codec.version>
+        <dep.commons.codec.version>1.17.2</dep.commons.codec.version>
         <aws.sdk.version>2.32.9</aws.sdk.version>
+        <dep.jts.version>1.19.0</dep.jts.version>
+
+        <dep.fastutil.version>8.5.2</dep.fastutil.version>
+        <dep.datasketches-memory.version>2.2.0</dep.datasketches-memory.version>
+        <dep.datasketches-java.version>5.0.1</dep.datasketches-java.version>
+
         <release.autoPublish>true</release.autoPublish>
     </properties>
 
@@ -409,7 +416,7 @@
             <dependency>
                 <groupId>commons-io</groupId>
                 <artifactId>commons-io</artifactId>
-                <version>2.16.1</version>
+                <version>2.18.0</version>
             </dependency>
 
             <dependency>
@@ -489,6 +496,13 @@
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-iceberg</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-delta</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
             </dependency>
@@ -1485,7 +1499,7 @@
             <dependency>
                 <groupId>it.unimi.dsi</groupId>
                 <artifactId>fastutil</artifactId>
-                <version>8.5.2</version>
+                <version>${dep.fastutil.version}</version>
             </dependency>
 
             <dependency>
@@ -1497,7 +1511,7 @@
             <dependency>
                 <groupId>com.sap.cloud.db.jdbc</groupId>
                 <artifactId>ngdbc</artifactId>
-                <version>2.17.12</version>
+                <version>2.26.11</version>
             </dependency>
 
             <dependency>
@@ -1516,7 +1530,7 @@
                 <!-- org.testcontainers:testcontainer's dependencies pull two different versions of this artifact and this is to negotiate the version -->
                 <groupId>net.java.dev.jna</groupId>
                 <artifactId>jna</artifactId>
-                <version>5.13.0</version>
+                <version>5.18.1</version>
             </dependency>
 
             <dependency>
@@ -1540,7 +1554,7 @@
             <dependency>
                 <groupId>com.microsoft.sqlserver</groupId>
                 <artifactId>mssql-jdbc</artifactId>
-                <version>12.8.1.jre8</version>
+                <version>13.2.1.jre11</version>
             </dependency>
 
             <dependency>
@@ -1629,7 +1643,7 @@
             <dependency>
                 <groupId>org.apache.thrift</groupId>
                 <artifactId>libthrift</artifactId>
-                <version>0.14.1</version>
+                <version>0.18.1</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.apache.httpcomponents</groupId>
@@ -2131,6 +2145,24 @@
             </dependency>
 
             <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-spi</artifactId>
+                <version>${dep.pinot.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-common</artifactId>
+                <version>${dep.pinot.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-core</artifactId>
+                <version>${dep.pinot.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka_2.12</artifactId>
                 <version>${dep.kafka.version}</version>
@@ -2279,21 +2311,15 @@
             </dependency>
 
             <dependency>
-                <groupId>org.apache.pinot</groupId>
-                <artifactId>presto-pinot-driver</artifactId>
-                <version>${dep.pinot.version}</version>
-            </dependency>
-
-            <dependency>
                 <groupId>org.xerial.snappy</groupId>
                 <artifactId>snappy-java</artifactId>
-                <version>1.1.10.4</version>
+                <version>1.1.10.7</version>
             </dependency>
 
             <dependency>
                 <groupId>com.github.luben</groupId>
                 <artifactId>zstd-jni</artifactId>
-                <version>1.5.2-3</version>
+                <version>1.5.7-6</version>
             </dependency>
 
             <dependency>
@@ -2329,7 +2355,7 @@
             <dependency>
                 <groupId>org.checkerframework</groupId>
                 <artifactId>checker-qual</artifactId>
-                <version>3.37.0</version>
+                <version>3.52.0</version>
             </dependency>
 
             <dependency>
@@ -2341,7 +2367,7 @@
             <dependency>
                 <groupId>redis.clients</groupId>
                 <artifactId>jedis</artifactId>
-                <version>3.8.0</version>
+                <version>7.0.0</version>
             </dependency>
 
             <dependency>
@@ -2462,7 +2488,7 @@
 
             <dependency>
                 <groupId>org.apache.lucene</groupId>
-                <artifactId>lucene-analyzers-common</artifactId>
+                <artifactId>lucene-analysis-common</artifactId>
                 <version>${dep.lucene.version}</version>
             </dependency>
 
@@ -2475,13 +2501,13 @@
             <dependency>
                 <groupId>org.locationtech.jts</groupId>
                 <artifactId>jts-core</artifactId>
-                <version>1.19.0</version>
+                <version>${dep.jts.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.locationtech.jts.io</groupId>
                 <artifactId>jts-io-common</artifactId>
-                <version>1.19.0</version>
+                <version>${dep.jts.version}</version>
                 <exclusions>
                     <exclusion>
                         <groupId>junit</groupId>
@@ -2544,13 +2570,13 @@
             <dependency>
                 <groupId>net.jodah</groupId>
                 <artifactId>failsafe</artifactId>
-                <version>2.0.1</version>
+                <version>2.4.4</version>
             </dependency>
 
             <dependency>
                 <groupId>com.clearspring.analytics</groupId>
                 <artifactId>stream</artifactId>
-                <version>2.9.5</version>
+                <version>2.9.8</version>
             </dependency>
 
             <dependency>
@@ -2610,13 +2636,13 @@
             <dependency>
                 <groupId>org.apache.datasketches</groupId>
                 <artifactId>datasketches-memory</artifactId>
-                <version>2.2.0</version>
+                <version>${dep.datasketches-memory.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.datasketches</groupId>
                 <artifactId>datasketches-java</artifactId>
-                <version>5.0.1</version>
+                <version>${dep.datasketches-java.version}</version>
             </dependency>
 
             <dependency>
@@ -2718,13 +2744,19 @@
             <dependency>
                 <groupId>com.nimbusds</groupId>
                 <artifactId>oauth2-oidc-sdk</artifactId>
-                <version>11.0</version>
+                <version>11.30.1</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.aw2</groupId>
                         <artifactId>asm</artifactId>
                     </exclusion>
                 </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.scala-lang</groupId>
+                <artifactId>scala-library</artifactId>
+                <version>${scala.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -2799,7 +2831,7 @@
                         <dependency>
                             <groupId>org.codehaus.mojo</groupId>
                             <artifactId>extra-enforcer-rules</artifactId>
-                            <version>1.6.2</version>
+                            <version>1.11.0</version>
                         </dependency>
                     </dependencies>
                     <configuration>
@@ -3211,7 +3243,7 @@
                                 <dependency>
                                     <groupId>org.codehaus.mojo</groupId>
                                     <artifactId>extra-enforcer-rules</artifactId>
-                                    <version>1.6.2</version>
+                                    <version>1.11.0</version>
                                 </dependency>
                             </dependencies>
                             <configuration>
@@ -3283,7 +3315,7 @@
                                 <dependency>
                                     <groupId>org.codehaus.mojo</groupId>
                                     <artifactId>extra-enforcer-rules</artifactId>
-                                    <version>1.6.2</version>
+                                    <version>1.11.0</version>
                                 </dependency>
                             </dependencies>
                             <configuration>

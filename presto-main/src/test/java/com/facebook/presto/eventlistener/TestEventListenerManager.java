@@ -20,6 +20,9 @@ import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.plan.PlanCanonicalizationStrategy;
 import com.facebook.presto.common.resourceGroups.QueryType;
 import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.analyzer.UpdateInfo;
+import com.facebook.presto.spi.connector.ConnectorCommitHandle;
 import com.facebook.presto.spi.eventlistener.CTEInformation;
 import com.facebook.presto.spi.eventlistener.Column;
 import com.facebook.presto.spi.eventlistener.EventListener;
@@ -186,7 +189,7 @@ public class TestEventListenerManager
         Optional<PrestoSparkExecutionContext> prestoSparkExecutionContext = Optional.empty();
         Map<PlanCanonicalizationStrategy, String> hboPlanHash = new HashMap<>();
         Optional<Map<PlanNodeId, PlanNode>> planIdNodeMap = Optional.ofNullable(new HashMap<>());
-
+        UpdateInfo updateInfo = new UpdateInfo("dummy-type", "dummy-object");
         return new QueryCompletedEvent(
                 metadata,
                 statistics,
@@ -214,7 +217,8 @@ public class TestEventListenerManager
                 windowFunctions,
                 prestoSparkExecutionContext,
                 hboPlanHash,
-                planIdNodeMap);
+                planIdNodeMap,
+                Optional.of(updateInfo.getUpdateObject()));
     }
 
     public static QueryStatistics createDummyQueryStatistics()
@@ -390,8 +394,8 @@ public class TestEventListenerManager
                 "dummyTable",
                 Optional.of("dummyConnectorMetadata"),
                 Optional.of(true),
-                "dummySerializedCommitOutput",
-                Optional.of(columns));
+                Optional.of(columns),
+                Optional.of(new TestCommitHandle("", "dummySerializedCommitOutput")));
         return new QueryIOMetadata(inputs, Optional.of(outputMetadata));
     }
 
@@ -413,7 +417,7 @@ public class TestEventListenerManager
                 columns,
                 connectorInfo,
                 Optional.empty(),
-                serializedCommitOutput);
+                Optional.of(new TestCommitHandle(serializedCommitOutput, "")));
     }
 
     private static SplitCompletedEvent createDummySplitCompletedEvent()
@@ -470,6 +474,31 @@ public class TestEventListenerManager
         }
         catch (IOException e) {
             log.error(e, "Could not delete file found at [%s]", path);
+        }
+    }
+
+    private static class TestCommitHandle
+            implements ConnectorCommitHandle
+    {
+        private final String readOutput;
+        private final String writeOutput;
+
+        public TestCommitHandle(String readOutput, String writeOutput)
+        {
+            this.readOutput = requireNonNull(readOutput, "readOutput is null");
+            this.writeOutput = requireNonNull(writeOutput, "writeOutput is null");
+        }
+
+        @Override
+        public String getSerializedCommitOutputForRead(SchemaTableName table)
+        {
+            return readOutput;
+        }
+
+        @Override
+        public String getSerializedCommitOutputForWrite(SchemaTableName table)
+        {
+            return writeOutput;
         }
     }
 

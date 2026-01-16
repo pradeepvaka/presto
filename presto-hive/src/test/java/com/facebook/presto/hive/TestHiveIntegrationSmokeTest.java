@@ -85,6 +85,8 @@ import static com.facebook.presto.SystemSessionProperties.INLINE_SQL_FUNCTIONS;
 import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static com.facebook.presto.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.LOG_INVOKED_FUNCTION_NAMES_ENABLED;
+import static com.facebook.presto.SystemSessionProperties.MATERIALIZED_VIEW_ALLOW_FULL_REFRESH_ENABLED;
+import static com.facebook.presto.SystemSessionProperties.MATERIALIZED_VIEW_DATA_CONSISTENCY_ENABLED;
 import static com.facebook.presto.SystemSessionProperties.PARTIAL_MERGE_PUSHDOWN_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.PARTITIONING_PROVIDER_CATALOG;
 import static com.facebook.presto.common.predicate.Marker.Bound.EXACTLY;
@@ -161,6 +163,7 @@ import static io.airlift.tpch.TpchTable.ORDERS;
 import static io.airlift.tpch.TpchTable.PART_SUPPLIER;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Locale.ENGLISH;
 import static java.util.Locale.ROOT;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
@@ -208,12 +211,16 @@ public class TestHiveIntegrationSmokeTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return HiveQueryRunner.createQueryRunner(ORDERS, CUSTOMER, LINE_ITEM, PART_SUPPLIER, NATION);
+        return HiveQueryRunner.createQueryRunner(ImmutableList.of(ORDERS, CUSTOMER, LINE_ITEM, PART_SUPPLIER, NATION),
+                ImmutableMap.of(),
+                "sql-standard",
+                ImmutableMap.of("hive.restrict-procedure-call", "false"),
+                Optional.empty());
     }
 
     private List<?> getPartitions(HiveTableLayoutHandle tableLayoutHandle)
     {
-        return tableLayoutHandle.getPartitions().get();
+        return tableLayoutHandle.getPartitions().map(PartitionSet::getFullyLoadedPartitions).get();
     }
 
     @Test
@@ -350,6 +357,43 @@ public class TestHiveIntegrationSmokeTest
                         Optional.of(new CatalogSchemaTableName(catalog, "tpch", "test_orders"))));
 
         assertUpdate("DROP TABLE test_orders");
+    }
+
+    @Test
+    public void testIOExplainWithTemporalTypes()
+    {
+        computeActual("CREATE TABLE test_temporal_io " +
+                "WITH (partitioned_by = ARRAY['dt', 'ts']) " +
+                "AS SELECT orderkey, " +
+                "CAST('2020-03-25' AS DATE) AS dt, " +
+                "CAST('2020-01-15 10:30:45.000' AS TIMESTAMP) AS ts " +
+                "FROM orders WHERE orderkey = 1");
+
+        try {
+            MaterializedResult result = computeActual("EXPLAIN (TYPE IO, FORMAT JSON) SELECT * FROM test_temporal_io " +
+                    "WHERE dt = DATE '2020-03-25' " +
+                    "AND ts = TIMESTAMP '2020-01-15 10:30:45.000'");
+            IOPlan ioPlan = jsonCodec(IOPlan.class).fromJson((String) getOnlyElement(result.getOnlyColumnAsSet()));
+            assertEquals(ioPlan.getInputTableColumnInfos().size(), 1);
+            TableColumnInfo tableInfo = ioPlan.getInputTableColumnInfos().iterator().next();
+
+            Optional<ColumnConstraint> dtConstraint = tableInfo.getColumnConstraints().stream()
+                    .filter(c -> c.getColumnName().equals("dt"))
+                    .findFirst();
+            assertTrue(dtConstraint.isPresent(), "Expected date column constraint");
+            assertEquals(dtConstraint.get().getDomain().getRanges().iterator().next().getLow().getValue().get(), "2020-03-25");
+
+            Optional<ColumnConstraint> tsConstraint = tableInfo.getColumnConstraints().stream()
+                    .filter(c -> c.getColumnName().equals("ts"))
+                    .findFirst();
+            assertTrue(tsConstraint.isPresent(), "Expected timestamp column constraint");
+            String tsValue = tsConstraint.get().getDomain().getRanges().iterator().next().getLow().getValue().get();
+            assertTrue(tsValue.matches("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}$"),
+                    "Timestamp should be formatted as yyyy-MM-dd HH:mm:ss.SSS but was: " + tsValue);
+        }
+        finally {
+            assertUpdate("DROP TABLE test_temporal_io");
+        }
     }
 
     @Test
@@ -2051,12 +2095,25 @@ public class TestHiveIntegrationSmokeTest
             assertEquals(e.getMessage(), "This connector only supports delete where one or more partitions are deleted entirely");
         }
 
+        // Test successful metadata delete on partition columns
         assertUpdate("DELETE FROM test_metadata_delete WHERE LINE_STATUS='O'");
 
         assertQuery("SELECT * from test_metadata_delete", "SELECT orderkey, linenumber, linestatus FROM lineitem WHERE linestatus<>'O' and linenumber<>3");
 
+        // Test delete on non-partition column - should fail
         try {
             getQueryRunner().execute("DELETE FROM test_metadata_delete WHERE ORDER_KEY=1");
+            fail("expected exception");
+        }
+        catch (RuntimeException e) {
+            assertEquals(e.getMessage(), "This connector only supports delete where one or more partitions are deleted entirely");
+        }
+
+        assertQuery("SELECT * from test_metadata_delete", "SELECT orderkey, linenumber, linestatus FROM lineitem WHERE linestatus<>'O' and linenumber<>3");
+
+        // Test delete with partition column AND RAND() - should fail because RAND() requires row-level filtering
+        try {
+            getQueryRunner().execute("DELETE FROM test_metadata_delete WHERE LINE_STATUS='F' AND rand() <= 0.1");
             fail("expected exception");
         }
         catch (RuntimeException e) {
@@ -6065,10 +6122,118 @@ public class TestHiveIntegrationSmokeTest
                 "SELECT COUNT(*) FROM ( " + expectedInsertQuery + " )",
                 false, true);
 
+        // Test InPredicate
+        refreshSql = "REFRESH MATERIALIZED VIEW test_customer_view_5 WHERE regionkey IN (1, 2)";
+        expectedInsertQuery = "SELECT nation.name AS nationname, customer.custkey, customer.name AS customername, UPPER(customer.mktsegment) AS marketsegment, customer.nationkey, regionkey " +
+                "FROM test_nation_base_5 nation JOIN test_customer_base_5 customer ON (nation.nationkey = customer.nationkey) " +
+                "WHERE regionkey IN (1, 2)";
+        QueryAssertions.assertQuery(
+                queryRunner,
+                session,
+                refreshSql,
+                queryRunner,
+                "SELECT COUNT(*) FROM ( " + expectedInsertQuery + " )",
+                false, true);
+
+        refreshSql = "REFRESH MATERIALIZED VIEW test_customer_view_5 WHERE nationkey IN (1, 5, 10) AND regionkey = 1";
+        expectedInsertQuery = "SELECT nation.name AS nationname, customer.custkey, customer.name AS customername, UPPER(customer.mktsegment) AS marketsegment, customer.nationkey, regionkey " +
+                "FROM test_nation_base_5 nation JOIN test_customer_base_5 customer ON (nation.nationkey = customer.nationkey) " +
+                "WHERE nation.nationkey IN (1, 5, 10) AND regionkey = 1";
+        QueryAssertions.assertQuery(
+                queryRunner,
+                session,
+                refreshSql,
+                queryRunner,
+                "SELECT COUNT(*) FROM ( " + expectedInsertQuery + " )",
+                false, true);
+
         // Test invalid predicates
         assertQueryFails("REFRESH MATERIALIZED VIEW test_customer_view_5 WHERE nationname = 'UNITED STATES'", ".*Refresh materialized view by column nationname is not supported.*");
-        assertQueryFails("REFRESH MATERIALIZED VIEW test_customer_view_5 WHERE regionkey + nationkey = 25", ".*Only columns specified on literals are supported in WHERE clause.*");
-        assertQueryFails("REFRESH MATERIALIZED VIEW test_customer_view_5", ".*Refresh Materialized View without predicates is not supported.");
+        assertQueryFails("REFRESH MATERIALIZED VIEW test_customer_view_5 WHERE regionkey + nationkey = 25", ".*Only column references are supported on the left side of comparison expressions in WHERE clause.*");
+    }
+
+    @Test
+    public void testAutoRefreshMaterializedViewFailsWithoutFlag()
+    {
+        computeActual("CREATE TABLE test_orders_no_flag WITH (partitioned_by = ARRAY['orderstatus']) " +
+                "AS SELECT orderkey, totalprice, orderstatus FROM orders WHERE orderkey < 100");
+        computeActual(
+                "CREATE MATERIALIZED VIEW test_orders_no_flag_view WITH (partitioned_by = ARRAY['orderstatus']" + retentionDays(30) + ") " +
+                        "AS SELECT SUM(totalprice) AS total, orderstatus FROM test_orders_no_flag GROUP BY orderstatus");
+
+        assertQueryFails(
+                "REFRESH MATERIALIZED VIEW test_orders_no_flag_view",
+                ".*misses too many partitions or is never refreshed and may incur high cost.*");
+
+        computeActual("DROP MATERIALIZED VIEW test_orders_no_flag_view");
+        computeActual("DROP TABLE test_orders_no_flag");
+    }
+
+    @Test
+    public void testMaterializedViewBaseTableDropped()
+    {
+        Session stitchingEnabledSession = Session.builder(getSession())
+                .setSystemProperty(MATERIALIZED_VIEW_ALLOW_FULL_REFRESH_ENABLED, "true")
+                .build();
+        Session stichingDisabledSession = Session.builder(getSession())
+                .setSystemProperty(MATERIALIZED_VIEW_DATA_CONSISTENCY_ENABLED, "false")
+                .build();
+
+        assertUpdate("CREATE TABLE drop_table_test (id BIGINT, partkey VARCHAR) " +
+                        "WITH (partitioned_by=ARRAY['partkey'])");
+        assertUpdate("INSERT INTO drop_table_test VALUES (1, 'p1'), (2, 'p2')", 2);
+
+        assertUpdate("CREATE MATERIALIZED VIEW mv_drop " +
+                        "with (partitioned_by=ARRAY['partkey']) " +
+                        "AS SELECT id, partkey FROM drop_table_test");
+
+        assertUpdate(stitchingEnabledSession, "REFRESH MATERIALIZED VIEW mv_drop", 2);
+
+        assertUpdate("DROP TABLE drop_table_test");
+
+        assertQueryFails(stitchingEnabledSession, "SELECT COUNT(*) FROM mv_drop",
+                ".*Table .* not found.*");
+        assertQueryFails(stichingDisabledSession, "SELECT * FROM mv_drop ORDER BY id",
+                ".*Table .* does not exist.*");
+
+        assertQueryFails("REFRESH MATERIALIZED VIEW mv_drop",
+                ".*Table .* not found.*");
+
+        computeActual("DROP MATERIALIZED VIEW mv_drop");
+    }
+
+    @Test
+    public void testMaterializedViewBaseTableRenamed()
+    {
+        Session stitchingEnabledSession = Session.builder(getSession())
+                .setSystemProperty(MATERIALIZED_VIEW_ALLOW_FULL_REFRESH_ENABLED, "true")
+                .build();
+        Session stichingDisabledSession = Session.builder(getSession())
+                .setSystemProperty(MATERIALIZED_VIEW_DATA_CONSISTENCY_ENABLED, "false")
+                .build();
+
+        assertUpdate("CREATE TABLE rename_table_test (id BIGINT, partkey VARCHAR) " +
+                "WITH (partitioned_by=ARRAY['partkey'])");
+        assertUpdate("INSERT INTO rename_table_test VALUES (1, 'p1'), (2, 'p2')", 2);
+
+        assertUpdate("CREATE MATERIALIZED VIEW mv_rename_test " +
+                "with (partitioned_by=ARRAY['partkey']) " +
+                "AS SELECT id, partkey FROM rename_table_test");
+
+        assertUpdate(stitchingEnabledSession, "REFRESH MATERIALIZED VIEW mv_rename_test", 2);
+
+        assertUpdate("ALTER TABLE rename_table_test RENAME TO rename_table_test_new");
+
+        assertQueryFails(stitchingEnabledSession, "SELECT COUNT(*) FROM mv_rename_test",
+                ".*Table .* not found.*");
+        assertQueryFails(stichingDisabledSession, "SELECT * FROM mv_rename_test ORDER BY id",
+                ".*Table .* does not exist.*");
+
+        assertQueryFails("REFRESH MATERIALIZED VIEW mv_rename_test",
+                ".*Table .* not found.*");
+
+        computeActual("DROP TABLE rename_table_test_new");
+        computeActual("DROP MATERIALIZED VIEW mv_rename_test");
     }
 
     @Test
@@ -6131,32 +6296,6 @@ public class TestHiveIntegrationSmokeTest
         resultWithQueryId = ((DistributedQueryRunner) queryRunner).executeWithQueryId(logFunctionNamesEnabledSession, queryWithFunctionsInLambda);
         queryInfo = ((DistributedQueryRunner) queryRunner).getQueryInfo(resultWithQueryId.getQueryId());
         assertEqualsNoOrder(queryInfo.getScalarFunctions(), ImmutableList.of("presto.default.transform", "presto.default.abs"));
-    }
-
-    @Test
-    public void testGroupByLimitPartitionKeys()
-    {
-        Session prefilter = Session.builder(getSession())
-                .setSystemProperty("prefilter_for_groupby_limit", "true")
-                .build();
-
-        @Language("SQL") String createTable = "" +
-                "CREATE TABLE test_create_partitioned_table_as " +
-                "WITH (" +
-                "partitioned_by = ARRAY[ 'orderstatus' ]" +
-                ") " +
-                "AS " +
-                "SELECT custkey, orderkey, orderstatus FROM tpch.tiny.orders";
-
-        assertUpdate(prefilter, createTable, 15000);
-        prefilter = Session.builder(prefilter)
-                .setSystemProperty("prefilter_for_groupby_limit", "true")
-                .build();
-
-        MaterializedResult plan = computeActual(prefilter, "explain(type distributed) select count(custkey), orderstatus from test_create_partitioned_table_as group by orderstatus limit 1000");
-        assertFalse(((String) plan.getOnlyValue()).toUpperCase().indexOf("MAP_AGG") >= 0);
-        plan = computeActual(prefilter, "explain(type distributed) select count(custkey), orderkey from test_create_partitioned_table_as group by orderkey limit 1000");
-        assertTrue(((String) plan.getOnlyValue()).toUpperCase().indexOf("MAP_AGG") >= 0);
     }
 
     @Test
@@ -6814,6 +6953,141 @@ public class TestHiveIntegrationSmokeTest
 
         String dropTableStmt = format("DROP TABLE %s.%s.%s", getSession().getCatalog().get(), getSession().getSchema().get(), tableName);
         assertUpdate(getSession(), dropTableStmt);
+    }
+
+    private void testCreateTableWithHeaderAndFooter(String format)
+    {
+        String name = format.toLowerCase(ENGLISH);
+        String catalog = getSession().getCatalog().get();
+        String schema = getSession().getSchema().get();
+        @Language("SQL") String createTableSql =
+                format("CREATE TABLE %s.%s.%s_table_skip_header (\n" +
+                                "   \"name\" varchar\n" +
+                                ")\n" +
+                                "WITH (\n" +
+                                "   format = '%s',\n" +
+                                "   skip_header_line_count = 1\n" +
+                                ")",
+                        catalog, schema, name, format);
+
+        assertUpdate(createTableSql);
+        MaterializedResult actual =
+                computeActual(format("SHOW CREATE TABLE %s_table_skip_header", name));
+        assertEquals(actual.getOnlyValue(), createTableSql);
+        assertUpdate(format("DROP TABLE %s_table_skip_header", name));
+
+        @Language("SQL") String createFooter =
+                format("CREATE TABLE %s.%s.%s_table_skip_footer (\n" +
+                                "   \"name\" varchar\n" +
+                                ")\n" +
+                                "WITH (\n" +
+                                "   format = '%s',\n" +
+                                "   skip_footer_line_count = 1\n" +
+                                ")",
+                        catalog, schema, name, format);
+
+        assertThatThrownBy(() -> assertUpdate(createFooter))
+                .hasMessageContaining("Cannot create non external table with skip.footer.line.count property");
+
+        @Language("SQL") String createHeaderFooter =
+                format("CREATE TABLE %s.%s.%s_table_skip_header_footer (\n" +
+                                "   \"name\" varchar\n" +
+                                ")\n" +
+                                "WITH (\n" +
+                                "   format = '%s',\n" +
+                                "   skip_footer_line_count = 1,\n" +
+                                "   skip_header_line_count = 1\n" +
+                                ")",
+                        catalog, schema, name, format);
+
+        assertThatThrownBy(() -> assertUpdate(createHeaderFooter))
+                .hasMessageContaining("Cannot create non external table with skip.footer.line.count property");
+
+        createTableSql =
+                format("CREATE TABLE %s.%s.%s_table_skip_header " +
+                                "WITH (\n" +
+                                "   format = '%s',\n" +
+                                "   skip_header_line_count = 1\n" +
+                                ") AS SELECT CAST(1 AS VARCHAR) AS col_name1, CAST(2 AS VARCHAR) AS col_name2",
+                        catalog, schema, name, format);
+
+        assertUpdate(createTableSql, 1);
+        assertUpdate(
+                format("INSERT INTO %s.%s.%s_table_skip_header VALUES('3', '4')",
+                        catalog, schema, name),
+                1);
+
+        MaterializedResult materializedRows =
+                computeActual(format("SELECT * FROM %s_table_skip_header", name));
+
+        assertEqualsIgnoreOrder(
+                materializedRows,
+                resultBuilder(getSession(), VARCHAR, VARCHAR)
+                        .row("1", "2")
+                        .row("3", "4")
+                        .build()
+                        .getMaterializedRows());
+
+        assertUpdate(format("DROP TABLE %s_table_skip_header", name));
+    }
+
+    @Test
+    public void testCreateTableWithHeaderAndFooterForCsv()
+    {
+        testCreateTableWithHeaderAndFooter("CSV");
+    }
+    @Test
+    public void testInsertTableWithHeaderAndFooterForCsv()
+    {
+        String catalog = getSession().getCatalog().get();
+        String schema = getSession().getSchema().get();
+
+        @Language("SQL") String createHeader =
+                format("CREATE TABLE %s.%s.csv_table_skip_header (\n" +
+                                "   name VARCHAR\n" +
+                                ")\n" +
+                                "WITH (\n" +
+                                "   format = 'CSV',\n" +
+                                "   skip_header_line_count = 2\n" +
+                                ")",
+                        catalog, schema);
+
+        assertUpdate(createHeader);
+
+        assertThatThrownBy(() ->
+                assertUpdate(format(
+                        "INSERT INTO %s.%s.csv_table_skip_header VALUES ('name')",
+                        catalog, schema)))
+                .hasMessageMatching("INSERT into .* skip.header.line.count property greater than 1 is not supported");
+
+        assertUpdate("DROP TABLE csv_table_skip_header");
+
+        createHeader =
+                format("CREATE TABLE %s.%s.csv_table_skip_header (\n" +
+                                "   name VARCHAR\n" +
+                                ")\n" +
+                                "WITH (\n" +
+                                "   format = 'CSV',\n" +
+                                "   skip_header_line_count = 1\n" +
+                                ")",
+                        catalog, schema);
+
+        assertUpdate(createHeader);
+
+        assertUpdate(format(
+                "INSERT INTO %s.%s.csv_table_skip_header VALUES ('name')", catalog, schema), 1);
+
+        MaterializedResult materializedRows =
+                computeActual(format("SELECT * FROM %s.%s.csv_table_skip_header", catalog, schema));
+
+        assertEqualsIgnoreOrder(
+                materializedRows,
+                resultBuilder(getSession(), VARCHAR)
+                        .row("name")
+                        .build()
+                        .getMaterializedRows());
+
+        assertUpdate("DROP TABLE csv_table_skip_header");
     }
 
     protected String retentionDays(int days)
