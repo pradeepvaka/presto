@@ -14,6 +14,7 @@ add_executable(
   AnnouncerTest.cpp
   ConnectorTest.cpp
   CoordinatorDiscovererTest.cpp
+  ExceptionTest.cpp
   HttpServerWrapper.cpp
   PeriodicMemoryCheckerTest.cpp
   PrestoExchangeSourceTest.cpp

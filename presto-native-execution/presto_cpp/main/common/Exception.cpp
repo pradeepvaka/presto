@@ -103,40 +103,52 @@ VeloxToPrestoExceptionTranslator::VeloxToPrestoExceptionTranslator() {
        .type = protocol::ErrorType::INSUFFICIENT_RESOURCES});
 
   // Register user errors
+  // User computation errors that ARE catchable by TRY()
   registerError(
       velox::error_source::kErrorSourceUser,
       velox::error_code::kInvalidArgument,
-      {.code = 0x00000000,
-       .name = "GENERIC_USER_ERROR",
-       .type = protocol::ErrorType::USER_ERROR});
+      {.code = 0x00000007,
+       .name = "INVALID_FUNCTION_ARGUMENT",
+       .type = protocol::ErrorType::USER_ERROR,
+       .retriable = false,
+       .catchableByTry = true});
 
+  registerError(
+      velox::error_source::kErrorSourceUser,
+      velox::error_code::kArithmeticError,
+      {.code = 0x00000008,
+       .name = "DIVISION_BY_ZERO",
+       .type = protocol::ErrorType::USER_ERROR,
+       .retriable = false,
+       .catchableByTry = true});
+
+  // User errors that are NOT catchable by TRY()
   registerError(
       velox::error_source::kErrorSourceUser,
       velox::error_code::kUnsupported,
       {.code = 0x0000000D,
        .name = "NOT_SUPPORTED",
-       .type = protocol::ErrorType::USER_ERROR});
+       .type = protocol::ErrorType::USER_ERROR,
+       .retriable = false,
+       .catchableByTry = false});
 
   registerError(
       velox::error_source::kErrorSourceUser,
       velox::error_code::kUnsupportedInputUncatchable,
       {.code = 0x0000000D,
        .name = "NOT_SUPPORTED",
-       .type = protocol::ErrorType::USER_ERROR});
-
-  registerError(
-      velox::error_source::kErrorSourceUser,
-      velox::error_code::kArithmeticError,
-      {.code = 0x00000000,
-       .name = "GENERIC_USER_ERROR",
-       .type = protocol::ErrorType::USER_ERROR});
+       .type = protocol::ErrorType::USER_ERROR,
+       .retriable = false,
+       .catchableByTry = false});
 
   registerError(
       velox::error_source::kErrorSourceUser,
       velox::error_code::kSchemaMismatch,
       {.code = 0x00000000,
        .name = "GENERIC_USER_ERROR",
-       .type = protocol::ErrorType::USER_ERROR});
+       .type = protocol::ErrorType::USER_ERROR,
+       .retriable = false,
+       .catchableByTry = false});
 }
 
 void VeloxToPrestoExceptionTranslator::registerError(
@@ -186,9 +198,12 @@ protocol::ExecutionFailureInfo VeloxToPrestoExceptionTranslator::translate(
       return error;
     }
   }
+  // Fallback error code - generic internal errors are NOT catchable by TRY()
   error.errorCode.code = 0x00010000;
   error.errorCode.name = "GENERIC_INTERNAL_ERROR";
   error.errorCode.type = protocol::ErrorType::INTERNAL_ERROR;
+  error.errorCode.retriable = false;
+  error.errorCode.catchableByTry = false;
   return error;
 }
 
@@ -197,9 +212,12 @@ protocol::ExecutionFailureInfo VeloxToPrestoExceptionTranslator::translate(
   protocol::ExecutionFailureInfo error;
   error.errorLocation.lineNumber = 1;
   error.errorLocation.columnNumber = 1;
+  // Generic std::exception errors are NOT catchable by TRY()
   error.errorCode.code = 0x00010000;
   error.errorCode.name = "GENERIC_INTERNAL_ERROR";
   error.errorCode.type = protocol::ErrorType::INTERNAL_ERROR;
+  error.errorCode.retriable = false;
+  error.errorCode.catchableByTry = false;
   error.type = "std::exception";
   error.message = e.what();
   return error;
