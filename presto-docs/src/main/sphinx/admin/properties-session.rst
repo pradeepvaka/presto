@@ -148,6 +148,34 @@ If it’s below the limit, the generated prefixes are used.
 
 The corresponding configuration property is :ref:`admin/properties:\`\`max-prefixes-count\`\``.
 
+``try_function_catchable_errors``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Default value:** ``""`` (empty string)
+
+A comma-separated list of error code names that the ``TRY()`` function should catch
+and return ``NULL`` for, in addition to the default catchable errors (such as
+``DIVISION_BY_ZERO``, ``INVALID_CAST_ARGUMENT``, ``INVALID_FUNCTION_ARGUMENT``,
+and ``NUMERIC_VALUE_OUT_OF_RANGE``).
+
+This allows users to specify exactly which additional errors ``TRY()`` should suppress.
+Error codes are matched by their name (e.g., ``REMOTE_FUNCTION_ERROR``).
+
+Example usage::
+
+    SET SESSION try_function_catchable_errors = 'REMOTE_FUNCTION_ERROR,REMOTE_FUNCTION_TIMEOUT';
+    SELECT TRY(remote_function(x)) FROM table;
+
+Available remote function error codes include:
+
+* ``REMOTE_FUNCTION_ERROR`` - Generic error during remote function execution
+* ``REMOTE_FUNCTION_TIMEOUT`` - Remote function execution timed out
+* ``REMOTE_FUNCTION_UNAVAILABLE`` - Remote function service is unavailable
+* ``REMOTE_FUNCTION_INVALID_RESPONSE`` - Invalid response received from remote function
+
+The corresponding configuration property is :ref:`admin/properties:\`\`try-function-catchable-errors\`\``.
+
 Spilling Properties
 -------------------
 
