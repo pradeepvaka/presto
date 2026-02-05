@@ -609,6 +609,16 @@ SessionProperties::SessionProperties() {
       false,
       QueryConfig::kAggregationCompactionUnusedMemoryRatio,
       std::to_string(c.aggregationCompactionUnusedMemoryRatio()));
+
+  addSessionProperty(
+      kTryFunctionCatchableErrors,
+      "Comma-separated list of error code names that TRY() should catch and "
+      "return NULL for. If empty (default), TRY() catches all user errors. "
+      "Example: ARITHMETIC_ERROR,INVALID_ARGUMENT",
+      VARCHAR(),
+      false,
+      QueryConfig::kTryCatchableErrorCodes,
+      c.tryCatchableErrorCodes());
 }
 
 const std::string SessionProperties::toVeloxConfig(
